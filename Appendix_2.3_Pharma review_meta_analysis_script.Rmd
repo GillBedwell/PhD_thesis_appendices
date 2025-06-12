@@ -1,0 +1,1499 @@
+---
+title: "A systematic review and meta-analysis of pharmacological methods to manipulate experimentally induced secondary hypersensitivity"
+author: "Gill Bedwell"
+date: "`r format(Sys.Date(), '%d %b %Y')`"
+output:
+  pdf_document:
+    number_sections: true
+    toc: true
+    toc_depth: 5
+  html_document:
+    code_folding: show
+    hightlight: pygments
+    theme: readable
+    number_sections: true
+    toc: true
+    toc_depth: 5
+    toc_float: yes
+  word_document:
+    toc: yes
+    toc_depth: '5'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+
+#Load packages 
+library(readxl)
+library(dplyr)
+library(forcats)
+library(tidyr)
+library(stringr)
+library(ggplot2)
+library(ggtext)
+library(glue)
+library(ggthemes)
+library(RColorBrewer)
+library(meta)
+library(metafor)
+library(tidyverse)
+library(magrittr)
+library(estmeansd)
+
+#Import data
+
+master_data <- read_excel("file_path.xlsx")
+
+```
+
+
+
+# NMDA receptor antagonist 
+
+``` {r nmda}
+###############   Magnitude   ###############
+# Do NMDA receptor antagonists decrease the magnitude of secondary hypersensitivity?
+mag_nmda_grp_1 <- master_data %>%
+  filter(manipulation_moa == "NMDA receptor antagonist")
+
+mag_nmda_grp_1 %<>% filter(was_mag_assessed == "yes")
+
+mag_nmda_grp_1 %<>%
+  filter(central_trend_spread_measure_mag == "mean_sd" | central_trend_spread_measure_mag == "mean_sem" | central_trend_spread_measure_mag == "median_iqr")
+
+# Convert Median IQR to mean SD for experimental group
+convert_to_mean_sd_mag_exp <- function(mean_exp_mag, sd_spread_exp_mag, median_exp_mag, iqr_exp_mag, ss_exp_mag) {
+  if (is.na(mean_exp_mag) & is.na(sd_spread_exp_mag)) {
+    tau_squared <- (iqr_exp_mag / (2 * qnorm(3/4)))^2
+    weight <- 1 / (tau_squared + (iqr_exp_mag / (2 * qnorm(3/4)))^2)
+    sd_estimate <- sqrt(tau_squared + (iqr_exp_mag / (2 * qnorm(3/4)))^2)
+    mean_estimate <- median_exp_mag
+    return(c(mean = mean_estimate, sd = sd_estimate, weight = weight))
+  } else {
+    return(c(mean = mean_exp_mag, sd = sd_spread_exp_mag, weight = NA))
+  }
+}
+
+converted_data_mag <- with(mag_nmda_grp_1, mapply(
+  convert_to_mean_sd_mag_exp, mean_exp_mag, sd_spread_exp_mag, median_exp_mag, iqr_exp_mag, ss_exp_mag
+))
+
+mag_nmda_grp_1[c("mean_exp", "sd_spread_exp", "weight")] <- t(converted_data_mag)
+
+mag_nmda_grp_1$iqr_control_mag <- as.numeric(mag_nmda_grp_1$iqr_control_mag)
+
+# Convert Median IQR to mean SD for control group
+convert_to_mean_sd_mag_control <- function(mean_control_mag, sd_spread_control_mag, median_control_mag, iqr_control_mag, ss_control_mag) {
+  if (is.na(mean_control_mag) & is.na(sd_spread_control_mag)) {
+    tau_squared <- (iqr_control_mag / (2 * qnorm(3/4)))^2
+    weight <- 1 / (tau_squared + (iqr_control_mag / (2 * qnorm(3/4)))^2)
+    sd_estimate <- sqrt(tau_squared + (iqr_control_mag / (2 * qnorm(3/4)))^2)
+    mean_estimate <- median_control_mag
+    return(c(mean = mean_estimate, sd = sd_estimate, weight = weight))
+  } else {
+    return(c(mean = mean_control_mag, sd = sd_spread_control_mag, weight = NA))
+  }
+}
+
+converted_data_mag <- with(mag_nmda_grp_1, mapply(
+  convert_to_mean_sd_mag_control, mean_control_mag, sd_spread_control_mag, median_control_mag, iqr_control_mag, ss_control_mag
+))
+
+mag_nmda_grp_1[c("mean_control", "sd_spread_control", "weight")] <- t(converted_data_mag)
+
+mag_nmda_grp_1$sd_spread_exp_mag <- as.numeric(mag_nmda_grp_1$sd_spread_exp_mag)
+mag_nmda_grp_1$mean_exp_mag <- as.numeric(mag_nmda_grp_1$mean_exp_mag)
+
+
+#3. Do any other unit conversion
+
+#Poyhia used 0 - 10 and needs to be converted to 0 - 100
+mag_nmda_grp_1$mean_exp_mag[mag_nmda_grp_1$article == "86"] <-
+  mag_nmda_grp_1$mean_exp_mag[mag_nmda_grp_1$article == "86"] * 10
+
+mag_nmda_grp_1$mean_control_mag[mag_nmda_grp_1$article == "86"] <-
+  mag_nmda_grp_1$mean_control_mag[mag_nmda_grp_1$article == "86"] *10
+
+mag_nmda_grp_1$sd_spread_exp_mag[mag_nmda_grp_1$article == "86"] <-
+  mag_nmda_grp_1$sd_spread_exp_mag[mag_nmda_grp_1$article == "86"] * 10
+
+mag_nmda_grp_1$sd_spread_control_mag[mag_nmda_grp_1$article == "86"] <-
+  mag_nmda_grp_1$sd_spread_control_mag[mag_nmda_grp_1$article == "86"] * 10
+
+
+# Round the mean and SD values to 1 decimal point
+mag_nmda_grp_1 <- mag_nmda_grp_1 %>%
+  mutate(mean_exp_mag = round(mean_exp_mag, 1),
+         sd_spread_exp_mag = round(sd_spread_exp_mag, 1),
+         mean_control_mag = round(mean_control_mag, 1),
+         sd_spread_control_mag = round(sd_spread_control_mag, 1))
+
+
+# Calculate the SMD
+meta_mag_nmda_btwn_con <- meta::metacont(
+n.e = ss_exp_mag,
+mean.e = mean_exp_mag,
+sd.e = sd_spread_exp_mag,
+n.c = ss_control_mag,
+mean.c = mean_control_mag,
+sd.c = sd_spread_control_mag,
+studlab = ifelse(!is.na(dataset_no),
+                   paste(first_author, " - ", "dataset:",dataset_no, "(",year,")"),
+                   paste(first_author, "(",year,")")),
+data = mag_nmda_grp_1,
+sm = "SMD",
+# standardised mean difference
+method.smd = "Hedges",
+# most preferred because it can better handle small sample sizes
+fixed = FALSE,
+random = TRUE,
+method.tau = "REML",
+method.random.ci = "HK",
+label.e = "Manipulation",
+label.c = "Sham",
+layout = "meta")
+
+summary(meta_mag_nmda_btwn_con)
+
+mag_nmda_grp_1$manipulation_method <- as.factor(mag_nmda_grp_1$manipulation_method )
+
+#Plot forest plot
+forest(
+  meta_mag_nmda_btwn_con,
+  col.square = "green",
+  col.square.lines = "black",
+  col.diamond.random = "black",
+  col.diamond.lines.random = "black",
+  allstudies = TRUE,
+  comb.fixed = FALSE,
+  comb.random = TRUE,
+  label.left = "Favours manipulation",
+  col.label.left = "black",
+  label.right = "Favours Sham",
+  col.label.right = "black",
+  overall = TRUE,
+  print.byvar = FALSE,
+  col.by = "dark green",
+  addrow.overall = TRUE,
+  addrow = TRUE,
+  digits.mean = 0,
+  digits.sd = 1
+)
+
+
+##### area: change from baseline #######
+sa_nmda_grp_2 <- master_data %>%
+  filter(manipulation_moa == "NMDA receptor antagonist") %>%
+filter(was_area_assessed == "yes") %>%
+filter(central_trend_spread_measure_area == "% of baseline median IQR" | central_trend_spread_measure_area == "% baseline mean sem" | central_trend_spread_measure_area == "% change median IQR")
+
+# Convert Median IQR to mean SD for experimental group
+convert_to_mean_sd_sa_exp <- function(mean_exp_area, sd_spread_exp_area, median_exp_area, iqr_exp_area, ss_exp_area) {
+  if (is.na(mean_exp_area) & is.na(sd_spread_exp_area)) {
+    tau_squared <- (iqr_exp_area / (2 * qnorm(3/4)))^2
+    weight <- 1 / (tau_squared + (iqr_exp_area / (2 * qnorm(3/4)))^2)
+    sd_estimate <- sqrt(tau_squared + (iqr_exp_area / (2 * qnorm(3/4)))^2)
+    mean_estimate <- median_exp_area
+    return(c(mean = mean_estimate, sd = sd_estimate, weight = weight))
+  } else {
+    return(c(mean = mean_exp_area, sd = sd_spread_exp_area, weight = NA))
+  }
+}
+
+converted_data_area <- with(sa_nmda_grp_2, mapply(
+  convert_to_mean_sd_sa_exp, mean_exp_area, sd_spread_exp_area, median_exp_area, iqr_exp_area, ss_exp_area
+))
+
+sa_nmda_grp_2[c("mean_exp_area", "sd_spread_exp_area", "weight")] <- t(converted_data_area)
+
+sa_nmda_grp_2$iqr_control_area <- as.numeric(sa_nmda_grp_2$iqr_control_area)
+
+# Convert Median IQR to mean SD for control group
+convert_to_mean_sd_sa_control <- function(mean_control_area, sd_spread_control_area, median_control_area, iqr_control_area, ss_control_area) {
+  if (is.na(mean_control_area) & is.na(sd_spread_control_area)) {
+    tau_squared <- (iqr_control_area / (2 * qnorm(3/4)))^2
+    weight <- 1 / (tau_squared + (iqr_control_area / (2 * qnorm(3/4)))^2)
+    sd_estimate <- sqrt(tau_squared + (iqr_control_area / (2 * qnorm(3/4)))^2)
+    mean_estimate <- median_control_area
+    return(c(mean = mean_estimate, sd = sd_estimate, weight = weight))
+  } else {
+    return(c(mean = mean_control_area, sd = sd_spread_control_area, weight = NA))
+  }
+}
+
+converted_data_area <- with(sa_nmda_grp_2, mapply(
+  convert_to_mean_sd_sa_control, mean_control_area, sd_spread_control_area, median_control_area, iqr_control_area, ss_control_area
+))
+
+sa_nmda_grp_2[c("mean_control_area", "sd_spread_control_area", "weight")] <- t(converted_data_area)
+
+sa_nmda_grp_2$mean_exp_area <- as.numeric(sa_nmda_grp_2$mean_exp_area)
+sa_nmda_grp_2$mean_control_area <- as.numeric(sa_nmda_grp_2$mean_control_area)
+sa_nmda_grp_2$sd_spread_exp_area <- as.numeric(sa_nmda_grp_2$sd_spread_exp_area)
+sa_nmda_grp_2$sd_spread_control_area <- as.numeric(sa_nmda_grp_2$sd_spread_control_area)
+sa_nmda_grp_2$ss_exp_area <- as.numeric(sa_nmda_grp_2$ss_exp_area)
+sa_nmda_grp_2$ss_control_area <- as.numeric(sa_nmda_grp_2$ss_control_area)
+
+sa_nmda_grp_2 <- sa_nmda_grp_2 %>%
+  arrange(manipulation_method)
+                                       
+# Calculate the SMD
+meta_area_nmda_change_from_BL <- meta::metacont(
+n.e = ss_exp_area,
+mean.e = mean_exp_area,
+sd.e = sd_spread_exp_area,
+n.c = ss_control_area,
+mean.c = mean_control_area,
+sd.c = sd_spread_control_area,
+studlab = ifelse(!is.na(dataset_no),
+                   paste(first_author, " - ", "dataset:",dataset_no, "(",year,")"),
+                   paste(first_author, "(",year,")")),
+data = sa_nmda_grp_2,
+sm = "SMD",
+# standardised mean difference
+method.smd = "Hedges",
+# most preferred because it can better handle small sample sizes
+fixed = FALSE,
+random = TRUE,
+method.tau = "REML",
+method.random.ci = "HK",
+label.e = "Manipulation",
+label.c = "Sham",
+layout = "meta")
+
+summary(meta_area_nmda_change_from_BL)
+
+sa_nmda_grp_2$manipulation_method <- as.factor(sa_nmda_grp_2$manipulation_method)
+
+#Plot forest plot
+forest(
+  meta_area_nmda_change_from_BL,
+  col.square = c("dextromethorphan" = "blue","ketamine" = "green")[sa_nmda_grp_2$manipulation_method],
+  col.square.lines = "black",
+  col.diamond.random = "black",
+  col.diamond.lines.random = "black",
+  allstudies = TRUE,
+  comb.fixed = FALSE,
+  comb.random = TRUE,
+  label.left = "Favours manipulation",
+  col.label.left = "black",
+  label.right = "Favours Sham",
+  col.label.right = "black",
+  overall = TRUE,
+  print.byvar = FALSE,
+  col.by = "dark green",
+  addrow.overall = TRUE,
+  addrow = TRUE,
+  digits.mean = 0,
+  digits.sd = 1
+)
+
+
+###############   Surface area   ###############
+# Do NMDA receptor antagonists decrease the surface area of secondary hypersensitivity?
+sa_nmda_grp_1 <- master_data %>%
+  filter(manipulation_moa == "NMDA receptor antagonist") %>%
+filter(was_area_assessed == "yes") %>%
+filter(central_trend_spread_measure_area == "mean_sd" | central_trend_spread_measure_area == "mean_sem" | central_trend_spread_measure_area == "median_iqr")
+
+# Andersen 1996 and Koppert 1999 datasets 1 and 2 presented area as radius in mm. Therefore we need to exclude all three datasets from the meta-analysis 
+sa_nmda_grp_1 %<>%
+  filter(!title == "The Effects of Intradermal Fentanyl and Ketamine on Capsaicin-Induced Secondary Hyperalgesia and Flare Reaction") %>%
+         filter(!title == "The effect of Ketamine on stimulation of primary and secondary hyperalgesic areas induced by capsaicin- a double-blind, placebo-controlled, human experimental study")
+
+# Convert Median IQR to mean SD for experimental group
+convert_to_mean_sd_sa_exp <- function(mean_exp_area, sd_spread_exp_area, median_exp_area, iqr_exp_area, ss_exp_area) {
+  if (is.na(mean_exp_area) & is.na(sd_spread_exp_area)) {
+    tau_squared <- (iqr_exp_area / (2 * qnorm(3/4)))^2
+    weight <- 1 / (tau_squared + (iqr_exp_area / (2 * qnorm(3/4)))^2)
+    sd_estimate <- sqrt(tau_squared + (iqr_exp_area / (2 * qnorm(3/4)))^2)
+    mean_estimate <- median_exp_area
+    return(c(mean = mean_estimate, sd = sd_estimate, weight = weight))
+  } else {
+    return(c(mean = mean_exp_area, sd = sd_spread_exp_area, weight = NA))
+  }
+}
+
+converted_data_area <- with(sa_nmda_grp_1, mapply(
+  convert_to_mean_sd_sa_exp, mean_exp_area, sd_spread_exp_area, median_exp_area, iqr_exp_area, ss_exp_area
+))
+
+sa_nmda_grp_1[c("mean_exp_area", "sd_spread_exp_area", "weight")] <- t(converted_data_area)
+
+sa_nmda_grp_1$iqr_control_area <- as.numeric(sa_nmda_grp_1$iqr_control_area)
+
+# Convert Median IQR to mean SD for control group
+convert_to_mean_sd_sa_control <- function(mean_control_area, sd_spread_control_area, median_control_area, iqr_control_area, ss_control_area) {
+  if (is.na(mean_control_area) & is.na(sd_spread_control_area)) {
+    tau_squared <- (iqr_control_area / (2 * qnorm(3/4)))^2
+    weight <- 1 / (tau_squared + (iqr_control_area / (2 * qnorm(3/4)))^2)
+    sd_estimate <- sqrt(tau_squared + (iqr_control_area / (2 * qnorm(3/4)))^2)
+    mean_estimate <- median_control_area
+    return(c(mean = mean_estimate, sd = sd_estimate, weight = weight))
+  } else {
+    return(c(mean = mean_control_area, sd = sd_spread_control_area, weight = NA))
+  }
+}
+
+converted_data_area <- with(sa_nmda_grp_1, mapply(
+  convert_to_mean_sd_sa_control, mean_control_area, sd_spread_control_area, median_control_area, iqr_control_area, ss_control_area
+))
+
+sa_nmda_grp_1[c("mean_control_area", "sd_spread_control_area", "weight")] <- t(converted_data_area)
+
+sa_nmda_grp_1$mean_exp_area <- as.numeric(sa_nmda_grp_1$mean_exp_area)
+sa_nmda_grp_1$mean_control_area <- as.numeric(sa_nmda_grp_1$mean_control_area)
+sa_nmda_grp_1$sd_spread_exp_area <- as.numeric(sa_nmda_grp_1$sd_spread_exp_area)
+sa_nmda_grp_1$sd_spread_control_area <- as.numeric(sa_nmda_grp_1$sd_spread_control_area)
+sa_nmda_grp_1$ss_exp_area <- as.numeric(sa_nmda_grp_1$ss_exp_area)
+sa_nmda_grp_1$ss_control_area <- as.numeric(sa_nmda_grp_1$ss_control_area)
+
+sa_nmda_grp_1 <- sa_nmda_grp_1 %>%
+  arrange(manipulation_method)
+                                       
+# Calculate the SMD
+meta_area_nmda_btwn_con <- meta::metacont(
+n.e = ss_exp_area,
+mean.e = mean_exp_area,
+sd.e = sd_spread_exp_area,
+n.c = ss_control_area,
+mean.c = mean_control_area,
+sd.c = sd_spread_control_area,
+studlab = ifelse(!is.na(dataset_no),
+                   paste(first_author, " - ", "dataset:",dataset_no, "(",year,")"),
+                   paste(first_author, "(",year,")")),
+data = sa_nmda_grp_1,
+sm = "SMD",
+# standardised mean difference
+method.smd = "Hedges",
+# most preferred because it can better handle small sample sizes
+fixed = FALSE,
+random = TRUE,
+method.tau = "REML",
+method.random.ci = "HK",
+label.e = "Manipulation",
+label.c = "Sham",
+layout = "meta")
+
+summary(meta_area_nmda_btwn_con)
+
+sa_nmda_grp_1$manipulation_method <- as.factor(sa_nmda_grp_1$manipulation_method)
+
+install.packages("Cairo")
+library(Cairo)
+
+#Plot forest plot
+forest(
+  meta_area_nmda_btwn_con,
+  col.square = c("CHF3381" = "red","dextromethorphan" = "blue","ketamine" = "green", "magnesium" = "yellow")[sa_nmda_grp_1$manipulation_method],
+  col.square.lines = "black",
+  col.diamond.random = "black",
+  col.diamond.lines.random = "black",
+  allstudies = TRUE,
+  comb.fixed = FALSE,
+  comb.random = TRUE,
+  label.left = "Favours manipulation",
+  col.label.left = "black",
+  label.right = "Favours Sham",
+  col.label.right = "black",
+  overall = TRUE,
+  print.byvar = FALSE,
+  col.by = "dark green",
+  addrow.overall = TRUE,
+  addrow = TRUE,
+  digits.mean = 0,
+  digits.sd = 1
+)
+
+
+```
+
+# Alpha 2-delta subunit of voltage-gated calcium channel blocker 
+
+```{r vgcc}
+
+###############   Magnitude   ###############
+# Do Alpha 2-delta subunit of voltage-gated calcium channel blockers decrease the magnitude of secondary hypersensitivity?
+mag_vgcal <- master_data %>%
+  filter(manipulation_moa == "Alpha 2-delta subunit of voltage-gated calcium channel inhibitor") %>% filter(was_mag_assessed == "yes") %>%
+  filter(central_trend_spread_measure_mag == "mean_sd" | central_trend_spread_measure_mag == "mean_sem" | central_trend_spread_measure_mag == "median_iqr")
+
+# Convert Median IQR to mean SD for experimental group
+convert_to_mean_sd <- function(mean_exp_mag, sd_spread_exp_mag, median_exp_mag, iqr_exp_mag, ss_exp_mag) {
+  if (is.na(mean_exp_mag) & is.na(sd_spread_exp_mag)) {
+    tau_squared <- (iqr_exp_mag / (2 * qnorm(3/4)))^2
+    weight <- 1 / (tau_squared + (iqr_exp_mag / (2 * qnorm(3/4)))^2)
+    sd_estimate <- sqrt(tau_squared + (iqr_exp_mag / (2 * qnorm(3/4)))^2)
+    mean_estimate <- median_exp_mag
+    return(c(mean = mean_estimate, sd = sd_estimate, weight = weight))
+  } else {
+    return(c(mean = mean_exp_mag, sd = sd_spread_exp_mag, weight = NA))
+  }
+}
+
+converted_data <- with(mag_vgcal, mapply(
+  convert_to_mean_sd, mean_exp_mag, sd_spread_exp_mag, median_exp_mag, iqr_exp_mag, ss_exp_mag
+))
+
+mag_vgcal[c("mean_exp_mag", "sd_spread_exp_mag", "weight")] <- t(converted_data)
+
+mag_vgcal$iqr_control_mag <- as.numeric(mag_vgcal$iqr_control_mag)
+
+# Convert Median IQR to mean SD for control group
+convert_to_mean_sd <- function(mean_control_mag, sd_spread_control_mag, median_control_mag, iqr_control_mag, ss_control_mag) {
+  if (is.na(mean_control_mag) & is.na(sd_spread_control_mag)) {
+    tau_squared <- (iqr_control_mag / (2 * qnorm(3/4)))^2
+    weight <- 1 / (tau_squared + (iqr_control_mag / (2 * qnorm(3/4)))^2)
+    sd_estimate <- sqrt(tau_squared + (iqr_control_mag / (2 * qnorm(3/4)))^2)
+    mean_estimate <- median_control_mag
+    return(c(mean = mean_estimate, sd = sd_estimate, weight = weight))
+  } else {
+    return(c(mean = mean_control_mag, sd = sd_spread_control_mag, weight = NA))
+  }
+}
+
+converted_data <- with(mag_vgcal, mapply(
+  convert_to_mean_sd, mean_control_mag, sd_spread_control_mag, median_control_mag, iqr_control_mag, ss_control_mag
+))
+
+mag_vgcal[c("mean_control_mag", "sd_spread_control_mag", "weight")] <- t(converted_data)
+
+mag_vgcal$ss_exp_mag <- as.numeric(mag_vgcal$ss_exp_mag)
+
+# Calculate the SMD
+meta_mag_vgcal<- meta::metacont(
+n.e = ss_exp_mag,
+mean.e = mean_exp_mag,
+sd.e = sd_spread_exp_mag,
+n.c = ss_control_mag,
+mean.c = mean_control_mag,
+sd.c = sd_spread_control_mag,
+studlab = ifelse(!is.na(dataset_no),
+                   paste(first_author, " - ", "dataset:",dataset_no, "(",year,")"),
+                   paste(first_author, "(",year,")")),
+data = mag_vgcal,
+sm = "SMD",
+# standardised mean difference
+method.smd = "Hedges",
+# most preferred because it can better handle small sample sizes
+fixed = FALSE,
+random = TRUE,
+method.tau = "REML",
+method.random.ci = "HK",
+label.e = "Manipulation",
+label.c = "Sham",
+layout = "meta")
+
+summary(meta_mag_vgcal)
+
+meta_mag_vgcal$manipulation_method <- as.factor(meta_mag_vgcal$manipulation_method )
+
+#Plot forest plot
+forest(
+  meta_mag_vgcal,
+  col.square = c("pregabalin" = "red", "gabapentin" = "blue")[mag_vgcal$manipulation_method],
+  col.square.lines = "black",
+  col.diamond.random = "black",
+  col.diamond.lines.random = "black",
+  allstudies = TRUE,
+  comb.fixed = FALSE,
+  comb.random = TRUE,
+  label.left = "Favours manipulation",
+  col.label.left = "black",
+  label.right = "Favours Sham",
+  col.label.right = "black",
+  overall = TRUE,
+  print.byvar = FALSE,
+  col.by = "dark green",
+  addrow.overall = TRUE,
+  addrow = TRUE,
+  digits.mean = 0,
+  digits.sd = 1
+)
+
+
+###############   Surface area   ###############
+# # Do Alpha 2-delta subunit of voltage-gated calcium channel blockers decrease the surface area of secondary hypersensitivity?
+
+sa_vgcl <- master_data %>%
+  filter(manipulation_moa == "Alpha 2-delta subunit of voltage-gated calcium channel inhibitor") %>%
+filter(was_area_assessed == "yes") %>%
+filter(central_trend_spread_measure_area == "mean_sd" | central_trend_spread_measure_area == "mean_se" | central_trend_spread_measure_area == "median_iqr")
+
+
+# Convert Median IQR to mean SD for experimental group
+convert_to_mean_sd_sa_exp <- function(mean_exp_area, sd_spread_exp_area, median_exp_area, iqr_exp_area, ss_exp_area) {
+  if (is.na(mean_exp_area) & is.na(sd_spread_exp_area)) {
+    tau_squared <- (iqr_exp_area / (2 * qnorm(3/4)))^2
+    weight <- 1 / (tau_squared + (iqr_exp_area / (2 * qnorm(3/4)))^2)
+    sd_estimate <- sqrt(tau_squared + (iqr_exp_area / (2 * qnorm(3/4)))^2)
+    mean_estimate <- median_exp_area
+    return(c(mean = mean_estimate, sd = sd_estimate, weight = weight))
+  } else {
+    return(c(mean = mean_exp_area, sd = sd_spread_exp_area, weight = NA))
+  }
+}
+
+converted_data_area <- with(sa_vgcl, mapply(
+  convert_to_mean_sd_sa_exp, mean_exp_area, sd_spread_exp_area, median_exp_area, iqr_exp_area, ss_exp_area
+))
+
+sa_vgcl[c("mean_exp_area", "sd_spread_exp_area", "weight")] <- t(converted_data_area)
+
+sa_vgcl$iqr_control_area <- as.numeric(sa_vgcl$iqr_control_area)
+
+# Convert Median IQR to mean SD for control group
+convert_to_mean_sd_sa_control <- function(mean_control_area, sd_spread_control_area, median_control_area, iqr_control_area, ss_control_area) {
+  if (is.na(mean_control_area) & is.na(sd_spread_control_area)) {
+    tau_squared <- (iqr_control_area / (2 * qnorm(3/4)))^2
+    weight <- 1 / (tau_squared + (iqr_control_area / (2 * qnorm(3/4)))^2)
+    sd_estimate <- sqrt(tau_squared + (iqr_control_area / (2 * qnorm(3/4)))^2)
+    mean_estimate <- median_control_area
+    return(c(mean = mean_estimate, sd = sd_estimate, weight = weight))
+  } else {
+    return(c(mean = mean_control_area, sd = sd_spread_control_area, weight = NA))
+  }
+}
+
+converted_data_area <- with(sa_vgcl, mapply(
+  convert_to_mean_sd_sa_control, mean_control_area, sd_spread_control_area, median_control_area, iqr_control_area, ss_control_area
+))
+
+sa_vgcl[c("mean_control_area", "sd_spread_control_area", "weight")] <- t(converted_data_area)
+
+sa_vgcl$mean_exp_area <- as.numeric(sa_vgcl$mean_exp_area)
+sa_vgcl$mean_control_area <- as.numeric(sa_vgcl$mean_control_area)
+sa_vgcl$sd_spread_exp_area <- as.numeric(sa_vgcl$sd_spread_exp_area)
+sa_vgcl$sd_spread_control_area <- as.numeric(sa_vgcl$sd_spread_control_area)
+sa_vgcl$ss_exp_area <- as.numeric(sa_vgcl$ss_exp_area)
+sa_vgcl$ss_control_area <- as.numeric(sa_vgcl$ss_control_area)
+
+sa_vgcl <- sa_vgcl %>%
+  arrange(manipulation_method)
+                                       
+# Calculate the SMD
+meta_area_vgcl <- meta::metacont(
+n.e = ss_exp_area,
+mean.e = mean_exp_area,
+sd.e = sd_spread_exp_area,
+n.c = ss_control_area,
+mean.c = mean_control_area,
+sd.c = sd_spread_control_area,
+studlab = ifelse(!is.na(dataset_no),
+                   paste(first_author, " - ", "dataset:",dataset_no, "(",year,")"),
+                   paste(first_author, "(",year,")")),
+data = sa_vgcl,
+sm = "SMD",
+# standardised mean difference
+method.smd = "Hedges",
+# most preferred because it can better handle small sample sizes
+fixed = FALSE,
+random = TRUE,
+method.tau = "REML",
+method.random.ci = "HK",
+label.e = "Manipulation",
+label.c = "Sham",
+layout = "meta")
+
+summary(meta_area_vgcl)
+
+sa_vgcl$manipulation_method <- as.factor(sa_vgcl$manipulation_method)
+
+#Plot forest plot
+forest(
+  meta_area_vgcl,
+  col.square = c("clonidine" = "blue","gabapentin" = "green")[sa_vgcl$manipulation_method],
+  col.square.lines = "black",
+  col.diamond.random = "black",
+  col.diamond.lines.random = "black",
+  allstudies = TRUE,
+  comb.fixed = FALSE,
+  comb.random = TRUE,
+  label.left = "Favours manipulation",
+  col.label.left = "black",
+  label.right = "Favours Sham",
+  col.label.right = "black",
+  overall = TRUE,
+  print.byvar = FALSE,
+  col.by = "dark green",
+  addrow.overall = TRUE,
+  addrow = TRUE,
+  digits.mean = 0,
+  digits.sd = 1
+)
+
+
+```
+
+# Voltage-gated sodium channel blockers decrease the magnitude of secondary hypersensitivity
+
+``` {r vgsc}
+
+###############   Magnitude   ###############
+mag_vgna <- master_data %>%
+  filter(manipulation_moa == "Voltage-gated sodium channel blocker") %>%
+filter(was_mag_assessed == "yes") %>%
+  filter(central_trend_spread_measure_mag == "mean_sd" | central_trend_spread_measure_mag == "mean_sem" | central_trend_spread_measure_mag == "median_iqr")
+
+
+# Calculate the SMD
+meta_mag_vgna <- meta::metacont(
+n.e = ss_exp_mag,
+mean.e = mean_exp_mag,
+sd.e = sd_spread_exp_mag,
+n.c = ss_control_mag,
+mean.c = mean_control_mag,
+sd.c = sd_spread_control_mag,
+studlab = ifelse(!is.na(dataset_no),
+                   paste(first_author, " - ", "dataset:",dataset_no, "(",year,")"),
+                   paste(first_author, "(",year,")")),
+data = mag_vgna,
+sm = "SMD",
+# standardised mean difference
+method.smd = "Hedges",
+# most preferred because it can better handle small sample sizes
+fixed = FALSE,
+random = TRUE,
+method.tau = "REML",
+method.random.ci = "HK",
+label.e = "Manipulation",
+label.c = "Sham",
+layout = "meta")
+
+summary(meta_mag_vgna)
+
+mag_vgna$manipulation_method <- as.factor(mag_vgna$manipulation_method )
+
+#Plot forest plot
+forest(
+  meta_mag_vgna,
+  col.square = c("mexiletine" = "red", "lidocaine" = "blue")[mag_vgna$manipulation_method],
+  col.square.lines = "black",
+  col.diamond.random = "black",
+  col.diamond.lines.random = "black",
+  allstudies = TRUE,
+  comb.fixed = FALSE,
+  comb.random = TRUE,
+  label.left = "Favours manipulation",
+  col.label.left = "black",
+  label.right = "Favours Sham",
+  col.label.right = "black",
+  overall = TRUE,
+  print.byvar = FALSE,
+  col.by = "dark green",
+  addrow.overall = TRUE,
+  addrow = TRUE)
+
+###############   Surface area   ###############
+# # Do voltage-gated sodium channel blockers decrease the surface area of secondary hypersensitivity?
+
+sa_vgna <- master_data %>%
+  filter(manipulation_moa == "Voltage-gated sodium channel blocker") %>%
+filter(was_area_assessed == "yes") %>%
+filter(central_trend_spread_measure_area == "mean_sd" | central_trend_spread_measure_area == "mean_sem" | central_trend_spread_measure_area == "median_iqr")
+
+# Convert Median IQR to mean SD for experimental group
+convert_to_mean_sd_sa_exp <- function(mean_exp_area, sd_spread_exp_area, median_exp_area, iqr_exp_area, ss_exp_area) {
+  if (is.na(mean_exp_area) & is.na(sd_spread_exp_area)) {
+    tau_squared <- (iqr_exp_area / (2 * qnorm(3/4)))^2
+    weight <- 1 / (tau_squared + (iqr_exp_area / (2 * qnorm(3/4)))^2)
+    sd_estimate <- sqrt(tau_squared + (iqr_exp_area / (2 * qnorm(3/4)))^2)
+    mean_estimate <- median_exp_area
+    return(c(mean = mean_estimate, sd = sd_estimate, weight = weight))
+  } else {
+    return(c(mean = mean_exp_area, sd = sd_spread_exp_area, weight = NA))
+  }
+}
+
+converted_data_area <- with(sa_vgna, mapply(
+  convert_to_mean_sd_sa_exp, mean_exp_area, sd_spread_exp_area, median_exp_area, iqr_exp_area, ss_exp_area
+))
+
+sa_vgna[c("mean_exp_area", "sd_spread_exp_area", "weight")] <- t(converted_data_area)
+
+sa_vgna$iqr_control_area <- as.numeric(sa_vgna$iqr_control_area)
+
+# Convert Median IQR to mean SD for control group
+convert_to_mean_sd_sa_control <- function(mean_control_area, sd_spread_control_area, median_control_area, iqr_control_area, ss_control_area) {
+  if (is.na(mean_control_area) & is.na(sd_spread_control_area)) {
+    tau_squared <- (iqr_control_area / (2 * qnorm(3/4)))^2
+    weight <- 1 / (tau_squared + (iqr_control_area / (2 * qnorm(3/4)))^2)
+    sd_estimate <- sqrt(tau_squared + (iqr_control_area / (2 * qnorm(3/4)))^2)
+    mean_estimate <- median_control_area
+    return(c(mean = mean_estimate, sd = sd_estimate, weight = weight))
+  } else {
+    return(c(mean = mean_control_area, sd = sd_spread_control_area, weight = NA))
+  }
+}
+
+converted_data_area <- with(sa_vgna, mapply(
+  convert_to_mean_sd_sa_control, mean_control_area, sd_spread_control_area, median_control_area, iqr_control_area, ss_control_area
+))
+
+sa_vgna[c("mean_control_area", "sd_spread_control_area", "weight")] <- t(converted_data_area)
+
+sa_vgna$mean_exp_area <- as.numeric(sa_vgna$mean_exp_area)
+sa_vgna$mean_control_area <- as.numeric(sa_vgna$mean_control_area)
+sa_vgna$sd_spread_exp_area <- as.numeric(sa_vgna$sd_spread_exp_area)
+sa_vgna$sd_spread_control_area <- as.numeric(sa_vgna$sd_spread_control_area)
+sa_vgna$ss_exp_area <- as.numeric(sa_vgna$ss_exp_area)
+sa_vgna$ss_control_area <- as.numeric(sa_vgna$ss_control_area)
+
+sa_vgna <- sa_vgna %>%
+  arrange(manipulation_method)
+                                       
+# Calculate the SMD
+meta_area_vgna <- meta::metacont(
+n.e = ss_exp_area,
+mean.e = mean_exp_area,
+sd.e = sd_spread_exp_area,
+n.c = ss_control_area,
+mean.c = mean_control_area,
+sd.c = sd_spread_control_area,
+studlab = ifelse(!is.na(dataset_no),
+                   paste(first_author, " - ", "dataset:",dataset_no, "(",year,")"),
+                   paste(first_author, "(",year,")")),
+data = sa_vgna,
+sm = "SMD",
+# standardised mean difference
+method.smd = "Hedges",
+# most preferred because it can better handle small sample sizes
+fixed = FALSE,
+random = TRUE,
+method.tau = "REML",
+method.random.ci = "HK",
+label.e = "Manipulation",
+label.c = "Sham",
+layout = "meta")
+
+summary(meta_area_vgna)
+
+sa_vgna$manipulation_method <- as.factor(sa_vgna$manipulation_method)
+
+#Plot forest plot
+forest(
+  meta_area_vgna,
+  col.square = c("lidocaine" = "blue","mexiletine" = "green")[sa_vgna$manipulation_method],
+  col.square.lines = "black",
+  col.diamond.random = "black",
+  col.diamond.lines.random = "black",
+  allstudies = TRUE,
+  comb.fixed = FALSE,
+  comb.random = TRUE,
+  label.left = "Favours manipulation",
+  col.label.left = "black",
+  label.right = "Favours Sham",
+  col.label.right = "black",
+  overall = TRUE,
+  print.byvar = FALSE,
+  col.by = "dark green",
+  addrow.overall = TRUE,
+  addrow = TRUE,
+  digits.mean = 0,
+  digits.sd = 1
+)
+
+```
+
+# Opioid reeceptor agonist
+
+```{r opioid}
+
+###############   Surface area   ###############
+# Do opioid receptor agonist decrease the surface area of secondary hypersensitivity?
+
+sa_opioid_agonist <- master_data %>%
+  filter(manipulation_moa == "Opioid receptor agonist") %>%
+filter(was_area_assessed == "yes") %>%
+filter(central_trend_spread_measure_area == "mean_sd" | central_trend_spread_measure_area == "mean_sem" | central_trend_spread_measure_area == "median_iqr" | central_trend_spread_measure_area == "mean_se")
+
+# Koppert 1999 datasets 1 and 2 presented area as radius in mm. Therefore we need to exclude both datasets from the meta-analysis 
+sa_opioid_agonist %<>%
+  filter(!title == "The Effects of Intradermal Fentanyl and Ketamine on Capsaicin-Induced Secondary Hyperalgesia and Flare Reaction") 
+
+# Convert Median IQR to mean SD for experimental group
+convert_to_mean_sd_sa_exp <- function(mean_exp_area, sd_spread_exp_area, median_exp_area, iqr_exp_area, ss_exp_area) {
+  if (is.na(mean_exp_area) & is.na(sd_spread_exp_area)) {
+    tau_squared <- (iqr_exp_area / (2 * qnorm(3/4)))^2
+    weight <- 1 / (tau_squared + (iqr_exp_area / (2 * qnorm(3/4)))^2)
+    sd_estimate <- sqrt(tau_squared + (iqr_exp_area / (2 * qnorm(3/4)))^2)
+    mean_estimate <- median_exp_area
+    return(c(mean = mean_estimate, sd = sd_estimate, weight = weight))
+  } else {
+    return(c(mean = mean_exp_area, sd = sd_spread_exp_area, weight = NA))
+  }
+}
+
+converted_data_area <- with(sa_opioid_agonist, mapply(
+  convert_to_mean_sd_sa_exp, mean_exp_area, sd_spread_exp_area, median_exp_area, iqr_exp_area, ss_exp_area
+))
+
+sa_opioid_agonist[c("mean_exp_area", "sd_spread_exp_area", "weight")] <- t(converted_data_area)
+
+sa_opioid_agonist$iqr_control_area <- as.numeric(sa_opioid_agonist$iqr_control_area)
+
+# Convert Median IQR to mean SD for control group
+convert_to_mean_sd_sa_control <- function(mean_control_area, sd_spread_control_area, median_control_area, iqr_control_area, ss_control_area) {
+  if (is.na(mean_control_area) & is.na(sd_spread_control_area)) {
+    tau_squared <- (iqr_control_area / (2 * qnorm(3/4)))^2
+    weight <- 1 / (tau_squared + (iqr_control_area / (2 * qnorm(3/4)))^2)
+    sd_estimate <- sqrt(tau_squared + (iqr_control_area / (2 * qnorm(3/4)))^2)
+    mean_estimate <- median_control_area
+    return(c(mean = mean_estimate, sd = sd_estimate, weight = weight))
+  } else {
+    return(c(mean = mean_control_area, sd = sd_spread_control_area, weight = NA))
+  }
+}
+
+converted_data_area <- with(sa_opioid_agonist, mapply(
+  convert_to_mean_sd_sa_control, mean_control_area, sd_spread_control_area, median_control_area, iqr_control_area, ss_control_area
+))
+
+sa_opioid_agonist[c("mean_control_area", "sd_spread_control_area", "weight")] <- t(converted_data_area)
+
+sa_opioid_agonist$mean_exp_area <- as.numeric(sa_opioid_agonist$mean_exp_area)
+sa_opioid_agonist$mean_control_area <- as.numeric(sa_opioid_agonist$mean_control_area)
+sa_opioid_agonist$sd_spread_exp_area <- as.numeric(sa_opioid_agonist$sd_spread_exp_area)
+sa_opioid_agonist$sd_spread_control_area <- as.numeric(sa_opioid_agonist$sd_spread_control_area)
+sa_opioid_agonist$ss_exp_area <- as.numeric(sa_opioid_agonist$ss_exp_area)
+sa_opioid_agonist$ss_control_area <- as.numeric(sa_opioid_agonist$ss_control_area)
+
+sa_opioid_agonist <- sa_opioid_agonist %>%
+  arrange(manipulation_method)
+                                       
+# Calculate the SMD
+meta_area_opioid_agonist <- meta::metacont(
+n.e = ss_exp_area,
+mean.e = mean_exp_area,
+sd.e = sd_spread_exp_area,
+n.c = ss_control_area,
+mean.c = mean_control_area,
+sd.c = sd_spread_control_area,
+studlab = ifelse(!is.na(dataset_no),
+                   paste(first_author, " - ", "dataset:",dataset_no, "(",year,")"),
+                   paste(first_author, "(",year,")")),
+data = sa_opioid_agonist,
+sm = "SMD",
+# standardised mean difference
+method.smd = "Hedges",
+# most preferred because it can better handle small sample sizes
+fixed = FALSE,
+random = TRUE,
+method.tau = "REML",
+method.random.ci = "HK",
+label.e = "Manipulation",
+label.c = "Sham",
+layout = "meta")
+
+summary(meta_area_opioid_agonist)
+
+sa_opioid_agonist$manipulation_method <- as.factor(sa_opioid_agonist$manipulation_method)
+
+#Plot forest plot
+forest(
+  meta_area_opioid_agonist,
+  col.square = c("alfentanil" = "red","buprenorphine" = "blue", "fentanyl" = "yellow", "fentanyl and buprenorphine" = "orange", "morphine" = "green", "remifentanil" = "pink")[sa_opioid_agonist$manipulation_method],
+  col.square.lines = "black",
+  col.diamond.random = "black",
+  col.diamond.lines.random = "black",
+  allstudies = TRUE,
+  comb.fixed = FALSE,
+  comb.random = TRUE,
+  label.left = "Favours manipulation",
+  col.label.left = "black",
+  label.right = "Favours Sham",
+  col.label.right = "black",
+  overall = TRUE,
+  print.byvar = FALSE,
+  col.by = "dark green",
+  addrow.overall = TRUE,
+  addrow = TRUE,
+  digits.mean = 0,
+  digits.sd = 1
+)
+
+
+
+##### area: change from baseline #######
+s<- master_data %>%
+  filter(manipulation_moa == "Opioid receptor agonist") %>%
+filter(was_area_assessed == "yes") %>%
+filter(central_trend_spread_measure_area == "% of baseline median IQR" | central_trend_spread_measure_area == "% baseline mean_sem" | central_trend_spread_measure_area == "% change mean_sem")
+
+# Convert Median IQR to mean SD for experimental group
+convert_to_mean_sd_sa_exp <- function(mean_exp_area, sd_spread_exp_area, median_exp_area, iqr_exp_area, ss_exp_area) {
+  if (is.na(mean_exp_area) & is.na(sd_spread_exp_area)) {
+    tau_squared <- (iqr_exp_area / (2 * qnorm(3/4)))^2
+    weight <- 1 / (tau_squared + (iqr_exp_area / (2 * qnorm(3/4)))^2)
+    sd_estimate <- sqrt(tau_squared + (iqr_exp_area / (2 * qnorm(3/4)))^2)
+    mean_estimate <- median_exp_area
+    return(c(mean = mean_estimate, sd = sd_estimate, weight = weight))
+  } else {
+    return(c(mean = mean_exp_area, sd = sd_spread_exp_area, weight = NA))
+  }
+}
+
+converted_data_area <- with(sa_opioid_grp_2, mapply(
+  convert_to_mean_sd_sa_exp, mean_exp_area, sd_spread_exp_area, median_exp_area, iqr_exp_area, ss_exp_area
+))
+
+sa_opioid_grp_2[c("mean_exp_area", "sd_spread_exp_area", "weight")] <- t(converted_data_area)
+
+sa_opioid_grp_2$iqr_control_area <- as.numeric(sa_opioid_grp_2$iqr_control_area)
+
+# Convert Median IQR to mean SD for control group
+convert_to_mean_sd_sa_control <- function(mean_control_area, sd_spread_control_area, median_control_area, iqr_control_area, ss_control_area) {
+  if (is.na(mean_control_area) & is.na(sd_spread_control_area)) {
+    tau_squared <- (iqr_control_area / (2 * qnorm(3/4)))^2
+    weight <- 1 / (tau_squared + (iqr_control_area / (2 * qnorm(3/4)))^2)
+    sd_estimate <- sqrt(tau_squared + (iqr_control_area / (2 * qnorm(3/4)))^2)
+    mean_estimate <- median_control_area
+    return(c(mean = mean_estimate, sd = sd_estimate, weight = weight))
+  } else {
+    return(c(mean = mean_control_area, sd = sd_spread_control_area, weight = NA))
+  }
+}
+
+converted_data_area <- with(sa_opioid_grp_2, mapply(
+  convert_to_mean_sd_sa_control, mean_control_area, sd_spread_control_area, median_control_area, iqr_control_area, ss_control_area
+))
+
+sa_opioid_grp_2[c("mean_control_area", "sd_spread_control_area", "weight")] <- t(converted_data_area)
+
+sa_opioid_grp_2$mean_exp_area <- as.numeric(sa_opioid_grp_2$mean_exp_area)
+sa_opioid_grp_2$mean_control_area <- as.numeric(sa_opioid_grp_2$mean_control_area)
+sa_opioid_grp_2$sd_spread_exp_area <- as.numeric(sa_opioid_grp_2$sd_spread_exp_area)
+sa_opioid_grp_2$sd_spread_control_area <- as.numeric(sa_opioid_grp_2$sd_spread_control_area)
+sa_opioid_grp_2$ss_exp_area <- as.numeric(sa_opioid_grp_2$ss_exp_area)
+sa_opioid_grp_2$ss_control_area <- as.numeric(sa_opioid_grp_2$ss_control_area)
+
+sa_opioid_grp_2 <- sa_opioid_grp_2 %>%
+  arrange(manipulation_method)
+                                       
+# Calculate the SMD
+meta_area_opioid_change_from_BL <- meta::metacont(
+n.e = ss_exp_area,
+mean.e = mean_exp_area,
+sd.e = sd_spread_exp_area,
+n.c = ss_control_area,
+mean.c = mean_control_area,
+sd.c = sd_spread_control_area,
+studlab = ifelse(!is.na(dataset_no),
+                   paste(first_author, " - ", "dataset:",dataset_no, "(",year,")"),
+                   paste(first_author, "(",year,")")),
+data = sa_opioid_grp_2,
+sm = "SMD",
+# standardised mean difference
+method.smd = "Hedges",
+# most preferred because it can better handle small sample sizes
+fixed = FALSE,
+random = TRUE,
+method.tau = "REML",
+method.random.ci = "HK",
+label.e = "Manipulation",
+label.c = "Sham",
+layout = "meta")
+
+summary(meta_area_opioid_change_from_BL)
+
+sa_opioid_grp_2$manipulation_method <- as.factor(sa_opioid_grp_2$manipulation_method)
+
+#Plot forest plot
+forest(
+  meta_area_opioid_change_from_BL,
+  col.square = c("alfentanil" = "red","buprenorphine" = "blue", "morphine" = "green", "remifentanil" = "pink", "tramadol" = "orange")[sa_opioid_grp_2$manipulation_method],
+  col.square.lines = "black",
+  col.diamond.random = "black",
+  col.diamond.lines.random = "black",
+  allstudies = TRUE,
+  comb.fixed = FALSE,
+  comb.random = TRUE,
+  label.left = "Favours manipulation",
+  col.label.left = "black",
+  label.right = "Favours Sham",
+  col.label.right = "black",
+  overall = TRUE,
+  print.byvar = FALSE,
+  col.by = "dark green",
+  addrow.overall = TRUE,
+  addrow = TRUE,
+  digits.mean = 0,
+  digits.sd = 1
+)
+
+```
+
+# Cyclooxygenase-1 and/or -2 enzyme inhibitor
+```{r cox}
+cox<- master_data %>%
+  filter(manipulation_moa == "Cyclooxygenase-1 and/or -2 enzyme inhibitor") %>%
+filter(was_area_assessed == "yes") %>%
+filter(central_trend_spread_measure_area == "mean_sd" | central_trend_spread_measure_area == "mean_sem")
+
+
+cox$mean_exp_area <- as.numeric(cox$mean_exp_area)
+cox$mean_control_area <- as.numeric(cox$mean_control_area)
+cox$sd_spread_exp_area <- as.numeric(cox$sd_spread_exp_area)
+cox$sd_spread_control_area <- as.numeric(cox$sd_spread_control_area)
+cox$ss_exp_area <- as.numeric(cox$ss_exp_area)
+cox$ss_control_area <- as.numeric(cox$ss_control_area)
+
+cox <- cox %>%
+  arrange(manipulation_method)
+                                       
+# Calculate the SMD
+meta_area_cox <- meta::metacont(
+n.e = ss_exp_area,
+mean.e = mean_exp_area,
+sd.e = sd_spread_exp_area,
+n.c = ss_control_area,
+mean.c = mean_control_area,
+sd.c = sd_spread_control_area,
+studlab = ifelse(!is.na(dataset_no),
+                   paste(first_author, " - ", "dataset:",dataset_no, "(",year,")"),
+                   paste(first_author, "(",year,")")),
+data = cox,
+sm = "SMD",
+# standardised mean difference
+method.smd = "Hedges",
+# most preferred because it can better handle small sample sizes
+fixed = FALSE,
+random = TRUE,
+method.tau = "REML",
+method.random.ci = "HK",
+label.e = "Manipulation",
+label.c = "Sham",
+layout = "meta")
+
+summary(meta_area_cox)
+
+cox$manipulation_method <- as.factor(cox$manipulation_method)
+cat("Length of TE:", length(meta_area_cox$TE), "\n")
+
+
+#Plot forest plot
+forest(
+  meta_area_cox,
+ # col.square = c("acetylsalicylic acid" = "red","ketorolac" = "blue", "valdecoxib" = "yellow")[meta_area_cox$manipulation_method],
+  col.square.lines = "black",
+  col.diamond.random = "black",
+  col.diamond.lines.random = "black",
+  allstudies = TRUE,
+  comb.fixed = FALSE,
+  comb.random = TRUE,
+  label.left = "Favours manipulation",
+  col.label.left = "black",
+  label.right = "Favours Sham",
+  col.label.right = "black",
+  overall = TRUE,
+  print.byvar = FALSE,
+  col.by = "dark green",
+  addrow.overall = TRUE,
+  addrow = TRUE,
+  digits.mean = 0,
+  digits.sd = 1
+)
+```
+
+# Opioid antagonist
+```{r opioid_ant}
+opioid_antagonist <- master_data %>%
+  filter(manipulation_moa == "Opioid receptor antagonist") %>%
+filter(was_area_assessed == "yes") %>%
+filter(central_trend_spread_measure_area == "mean_sem" | central_trend_spread_measure_area == "median_iqr")
+
+opioid_antagonist %<>%
+  filter(!article == "47")
+
+# Convert Median IQR to mean SD for experimental group
+convert_to_mean_sd_sa_exp <- function(mean_exp_area, sd_spread_exp_area, median_exp_area, iqr_exp_area, ss_exp_area) {
+  if (is.na(mean_exp_area) & is.na(sd_spread_exp_area)) {
+    tau_squared <- (iqr_exp_area / (2 * qnorm(3/4)))^2
+    weight <- 1 / (tau_squared + (iqr_exp_area / (2 * qnorm(3/4)))^2)
+    sd_estimate <- sqrt(tau_squared + (iqr_exp_area / (2 * qnorm(3/4)))^2)
+    mean_estimate <- median_exp_area
+    return(c(mean = mean_estimate, sd = sd_estimate, weight = weight))
+  } else {
+    return(c(mean = mean_exp_area, sd = sd_spread_exp_area, weight = NA))
+  }
+}
+
+converted_data_area <- with(opioid_antagonist, mapply(
+  convert_to_mean_sd_sa_exp, mean_exp_area, sd_spread_exp_area, median_exp_area, iqr_exp_area, ss_exp_area
+))
+
+opioid_antagonist[c("mean_exp_area", "sd_spread_exp_area", "weight")] <- t(converted_data_area)
+
+opioid_antagonist$iqr_control_area <- as.numeric(opioid_antagonist$iqr_control_area)
+
+# Convert Median IQR to mean SD for control group
+convert_to_mean_sd_sa_control <- function(mean_control_area, sd_spread_control_area, median_control_area, iqr_control_area, ss_control_area) {
+  if (is.na(mean_control_area) & is.na(sd_spread_control_area)) {
+    tau_squared <- (iqr_control_area / (2 * qnorm(3/4)))^2
+    weight <- 1 / (tau_squared + (iqr_control_area / (2 * qnorm(3/4)))^2)
+    sd_estimate <- sqrt(tau_squared + (iqr_control_area / (2 * qnorm(3/4)))^2)
+    mean_estimate <- median_control_area
+    return(c(mean = mean_estimate, sd = sd_estimate, weight = weight))
+  } else {
+    return(c(mean = mean_control_area, sd = sd_spread_control_area, weight = NA))
+  }
+}
+
+converted_data_area <- with(opioid_antagonist, mapply(
+  convert_to_mean_sd_sa_control, mean_control_area, sd_spread_control_area, median_control_area, iqr_control_area, ss_control_area
+))
+
+opioid_antagonist[c("mean_control_area", "sd_spread_control_area", "weight")] <- t(converted_data_area)
+
+opioid_antagonist$mean_exp_area <- as.numeric(opioid_antagonist$mean_exp_area)
+opioid_antagonist$mean_control_area <- as.numeric(opioid_antagonist$mean_control_area)
+opioid_antagonist$sd_spread_exp_area <- as.numeric(opioid_antagonist$sd_spread_exp_area)
+opioid_antagonist$sd_spread_control_area <- as.numeric(opioid_antagonist$sd_spread_control_area)
+opioid_antagonist$ss_exp_area <- as.numeric(opioid_antagonist$ss_exp_area)
+opioid_antagonist$ss_control_area <- as.numeric(opioid_antagonist$ss_control_area)
+
+opioid_antagonist <- opioid_antagonist %>%
+  arrange(manipulation_method)
+                                       
+# Calculate the SMD
+meta_area_opioid_antagonist <- meta::metacont(
+n.e = ss_exp_area,
+mean.e = mean_exp_area,
+sd.e = sd_spread_exp_area,
+n.c = ss_control_area,
+mean.c = mean_control_area,
+sd.c = sd_spread_control_area,
+studlab = ifelse(!is.na(dataset_no),
+                   paste(first_author, " - ", "dataset:",dataset_no, "(",year,")"),
+                   paste(first_author, "(",year,")")),
+data = opioid_antagonist,
+sm = "SMD",
+# standardised mean difference
+method.smd = "Hedges",
+# most preferred because it can better handle small sample sizes
+fixed = FALSE,
+random = TRUE,
+method.tau = "REML",
+method.random.ci = "HK",
+label.e = "Manipulation",
+label.c = "Sham",
+layout = "meta")
+
+summary(meta_area_opioid_antagonist)
+
+sa_opioid_agonist$manipulation_method <- as.factor(sa_opioid_agonist$manipulation_method)
+
+#Plot forest plot
+forest(
+  meta_area_opioid_antagonist,
+  #col.square = c("alfentanil" = "red","buprenorphine" = "blue", "fentanyl" = "yellow", "fentanyl and buprenorphine" = "orange", "morphine" = "green", "remifentanil" = "pink")[sa_opioid_agonist$manipulation_method],
+  col.square.lines = "black",
+  col.diamond.random = "black",
+  col.diamond.lines.random = "black",
+  allstudies = TRUE,
+  comb.fixed = FALSE,
+  comb.random = TRUE,
+  label.left = "Favours manipulation",
+  col.label.left = "black",
+  label.right = "Favours Sham",
+  col.label.right = "black",
+  overall = TRUE,
+  print.byvar = FALSE,
+  col.by = "dark green",
+  addrow.overall = TRUE,
+  addrow = TRUE,
+  digits.mean = 0,
+  digits.sd = 1
+)
+```
+
+# Presynaptic acetylcholine release inhibitor
+
+```{r acet}
+botox<- master_data %>%
+  filter(manipulation_moa == "Presynaptic acetylcholine release inhibitor") %>%
+filter(was_area_assessed == "yes") %>%
+filter(central_trend_spread_measure_area == "mean_sd" | central_trend_spread_measure_area == "mean_sem" | central_trend_spread_measure_area == "mean_se")
+
+
+botox$mean_exp_area <- as.numeric(botox$mean_exp_area)
+botox$mean_control_area <- as.numeric(botox$mean_control_area)
+botox$sd_spread_exp_area <- as.numeric(botox$sd_spread_exp_area)
+botox$sd_spread_control_area <- as.numeric(botox$sd_spread_control_area)
+botox$ss_exp_area <- as.numeric(botox$ss_exp_area)
+botox$ss_control_area <- as.numeric(botox$ss_control_area)
+
+botox <- botox %>%
+  arrange(manipulation_method)
+                                       
+# Calculate the SMD
+meta_area_botox <- meta::metacont(
+n.e = ss_exp_area,
+mean.e = mean_exp_area,
+sd.e = sd_spread_exp_area,
+n.c = ss_control_area,
+mean.c = mean_control_area,
+sd.c = sd_spread_control_area,
+studlab = ifelse(!is.na(dataset_no),
+                   paste(first_author, " - ", "dataset:",dataset_no, "(",year,")"),
+                   paste(first_author, "(",year,")")),
+data = botox,
+sm = "SMD",
+# standardised mean difference
+method.smd = "Hedges",
+# most preferred because it can better handle small sample sizes
+fixed = FALSE,
+random = TRUE,
+method.tau = "REML",
+method.random.ci = "HK",
+label.e = "Manipulation",
+label.c = "Sham",
+layout = "meta")
+
+summary(meta_area_botox)
+
+meta_area_botox$manipulation_method <- as.factor(meta_area_botox$manipulation_method)
+
+
+#Plot forest plot
+forest(
+  meta_area_botox,
+ # col.square = c("acetylsalicylic acid" = "red","ketorolac" = "blue", "valdecoxib" = "yellow")[meta_area_cox$manipulation_method],
+  col.square.lines = "black",
+  col.diamond.random = "black",
+  col.diamond.lines.random = "black",
+  allstudies = TRUE,
+  comb.fixed = FALSE,
+  comb.random = TRUE,
+  label.left = "Favours manipulation",
+  col.label.left = "black",
+  label.right = "Favours Sham",
+  col.label.right = "black",
+  overall = TRUE,
+  print.byvar = FALSE,
+  col.by = "dark green",
+  addrow.overall = TRUE,
+  addrow = TRUE,
+  digits.mean = 0,
+  digits.sd = 1
+)
+```
+
+# Adenosine
+
+```{r adenosine}
+adenosine <- master_data %>%
+  filter(manipulation_moa == "Adenosine receptor A2a, A2b, A3") %>%
+filter(was_area_assessed == "yes") %>%
+filter(central_trend_spread_measure_area == "mean_sd" | central_trend_spread_measure_area == "mean_sem" | central_trend_spread_measure_area == "median_iqr" | central_trend_spread_measure_area == "mean_se")
+
+
+# Convert Median IQR to mean SD for experimental group
+convert_to_mean_sd_sa_exp <- function(mean_exp_area, sd_spread_exp_area, median_exp_area, iqr_exp_area, ss_exp_area) {
+  if (is.na(mean_exp_area) & is.na(sd_spread_exp_area)) {
+    tau_squared <- (iqr_exp_area / (2 * qnorm(3/4)))^2
+    weight <- 1 / (tau_squared + (iqr_exp_area / (2 * qnorm(3/4)))^2)
+    sd_estimate <- sqrt(tau_squared + (iqr_exp_area / (2 * qnorm(3/4)))^2)
+    mean_estimate <- median_exp_area
+    return(c(mean = mean_estimate, sd = sd_estimate, weight = weight))
+  } else {
+    return(c(mean = mean_exp_area, sd = sd_spread_exp_area, weight = NA))
+  }
+}
+
+converted_data_area <- with(adenosine, mapply(
+  convert_to_mean_sd_sa_exp, mean_exp_area, sd_spread_exp_area, median_exp_area, iqr_exp_area, ss_exp_area
+))
+
+adenosine[c("mean_exp_area", "sd_spread_exp_area", "weight")] <- t(converted_data_area)
+
+adenosine$iqr_control_area <- as.numeric(adenosine$iqr_control_area)
+
+# Convert Median IQR to mean SD for control group
+convert_to_mean_sd_sa_control <- function(mean_control_area, sd_spread_control_area, median_control_area, iqr_control_area, ss_control_area) {
+  if (is.na(mean_control_area) & is.na(sd_spread_control_area)) {
+    tau_squared <- (iqr_control_area / (2 * qnorm(3/4)))^2
+    weight <- 1 / (tau_squared + (iqr_control_area / (2 * qnorm(3/4)))^2)
+    sd_estimate <- sqrt(tau_squared + (iqr_control_area / (2 * qnorm(3/4)))^2)
+    mean_estimate <- median_control_area
+    return(c(mean = mean_estimate, sd = sd_estimate, weight = weight))
+  } else {
+    return(c(mean = mean_control_area, sd = sd_spread_control_area, weight = NA))
+  }
+}
+
+converted_data_area <- with(adenosine, mapply(
+  convert_to_mean_sd_sa_control, mean_control_area, sd_spread_control_area, median_control_area, iqr_control_area, ss_control_area
+))
+
+adenosine[c("mean_control_area", "sd_spread_control_area", "weight")] <- t(converted_data_area)
+
+adenosine$mean_exp_area <- as.numeric(adenosine$mean_exp_area)
+adenosine$mean_control_area <- as.numeric(adenosine$mean_control_area)
+adenosine$sd_spread_exp_area <- as.numeric(adenosine$sd_spread_exp_area)
+adenosine$sd_spread_control_area <- as.numeric(adenosine$sd_spread_control_area)
+adenosine$ss_exp_area <- as.numeric(adenosine$ss_exp_area)
+adenosine$ss_control_area <- as.numeric(adenosine$ss_control_area)
+
+adenosine <- adenosine %>%
+  arrange(manipulation_method)
+                                       
+# Calculate the SMD
+meta_area_adenosine <- meta::metacont(
+n.e = ss_exp_area,
+mean.e = mean_exp_area,
+sd.e = sd_spread_exp_area,
+n.c = ss_control_area,
+mean.c = mean_control_area,
+sd.c = sd_spread_control_area,
+studlab = ifelse(!is.na(dataset_no),
+                   paste(first_author, " - ", "dataset:",dataset_no, "(",year,")"),
+                   paste(first_author, "(",year,")")),
+data = adenosine,
+sm = "SMD",
+# standardised mean difference
+method.smd = "Hedges",
+# most preferred because it can better handle small sample sizes
+fixed = FALSE,
+random = TRUE,
+method.tau = "REML",
+method.random.ci = "HK",
+label.e = "Manipulation",
+label.c = "Sham",
+layout = "meta")
+
+summary(meta_area_adenosine)
+
+meta_area_adenosine$manipulation_method <- as.factor(meta_area_adenosine$manipulation_method)
+
+#Plot forest plot
+forest(
+  meta_area_adenosine,
+  #col.square = c("alfentanil" = "red","buprenorphine" = "blue", "fentanyl" = "yellow", "fentanyl and buprenorphine" = "orange", "morphine" = "green", "remifentanil" = "pink")[sa_opioid_agonist$manipulation_method],
+  col.square.lines = "black",
+  col.diamond.random = "black",
+  col.diamond.lines.random = "black",
+  allstudies = TRUE,
+  comb.fixed = FALSE,
+  comb.random = TRUE,
+  label.left = "Favours manipulation",
+  col.label.left = "black",
+  label.right = "Favours Sham",
+  col.label.right = "black",
+  overall = TRUE,
+  print.byvar = FALSE,
+  col.by = "dark green",
+  addrow.overall = TRUE,
+  addrow = TRUE,
+  digits.mean = 0,
+  digits.sd = 1
+)
+```
+
+# Cannabinoid receptor agonist
+
+```{r canna}
+cannabinoid<- master_data %>%
+  filter(manipulation_moa == "Cannabinoid receptor agonist") %>%
+filter(was_area_assessed == "yes") %>%
+filter(central_trend_spread_measure_area == "mean_sd" | central_trend_spread_measure_area == "mean_sem")
+
+
+cannabinoid$mean_exp_area <- as.numeric(cannabinoid$mean_exp_area)
+cannabinoid$mean_control_area <- as.numeric(cannabinoid$mean_control_area)
+cannabinoid$sd_spread_exp_area <- as.numeric(cannabinoid$sd_spread_exp_area)
+cannabinoid$sd_spread_control_area <- as.numeric(cannabinoid$sd_spread_control_area)
+cannabinoid$ss_exp_area <- as.numeric(cannabinoid$ss_exp_area)
+cannabinoid$ss_control_area <- as.numeric(cannabinoid$ss_control_area)
+
+cannabinoid <- cannabinoid %>%
+  arrange(manipulation_method)
+                                       
+# Calculate the SMD
+meta_area_cannabinoid <- meta::metacont(
+n.e = ss_exp_area,
+mean.e = mean_exp_area,
+sd.e = sd_spread_exp_area,
+n.c = ss_control_area,
+mean.c = mean_control_area,
+sd.c = sd_spread_control_area,
+studlab = ifelse(!is.na(dataset_no),
+                   paste(first_author, " - ", "dataset:",dataset_no, "(",year,")"),
+                   paste(first_author, "(",year,")")),
+data = cannabinoid,
+sm = "SMD",
+# standardised mean difference
+method.smd = "Hedges",
+# most preferred because it can better handle small sample sizes
+fixed = FALSE,
+random = TRUE,
+method.tau = "REML",
+method.random.ci = "HK",
+label.e = "Manipulation",
+label.c = "Sham",
+layout = "meta")
+
+summary(meta_area_cannabinoid)
+
+cannabinoid$manipulation_method <- as.factor(cannabinoid$manipulation_method)
+
+
+#Plot forest plot
+forest(
+  meta_area_cannabinoid,
+ #col.square = c("HU210" = "red","cannabidiol" = "blue", "delta-9-tetrahydrocannabinol (THC)" = "yellow", "delta-9-tetrahydrocannabinol (THC)" = "yellow")[meta_area_cox$manipulation_method],
+  col.square.lines = "black",
+  col.diamond.random = "black",
+  col.diamond.lines.random = "black",
+  allstudies = TRUE,
+  comb.fixed = FALSE,
+  comb.random = TRUE,
+  label.left = "Favours manipulation",
+  col.label.left = "black",
+  label.right = "Favours Sham",
+  col.label.right = "black",
+  overall = TRUE,
+  print.byvar = FALSE,
+  col.by = "dark green",
+  addrow.overall = TRUE,
+  addrow = TRUE,
+  digits.mean = 0,
+  digits.sd = 1
+)
+```
+
+# Publication bias 
+
+```{r publication_bias}
+
+summary(meta_area_nmda_btwn_con)
+funnel(meta_area_nmda_btwn_con)
+title(main = "Funnel plot for assessing publication bias in datasets that used an NMDA receptor antagonist \nanticipated to decrease the surface area of secondary hypersensitivity")
+regtest <- metabias(meta_area_nmda_btwn_con, method.bias = "Begg")
+print(regtest)
+
+funnel(meta_mag_vgcal)
+
+summary(meta_area_vgcl)
+funnel(meta_area_vgcl)
+title(main = "Funnel plot for assessing publication bias in datasets that used \nan alpha-2-delta subunit of voltage-gated calcium channel ligand \nanticipated to decrease the surface area of secondary hypersensitivity")
+regtest <- metabias(meta_area_vgcl, method.bias = "Begg")
+print(regtest)
+
+
+summary(meta_area_vgna)
+funnel(meta_area_vgna)
+title(main = "Funnel plot for assessing publication bias in datasets that used \na voltage-gated sodium channel blocker anticipated to \ndecrease the surface area of secondary hypersensitivity")
+regtest <- metabias(meta_area_vgna, method.bias = "Begg")
+print(regtest)
+
+summary(meta_area_opioid_agonist)
+funnel(meta_area_opioid_agonist)
+title(main = "Funnel plot for assessing publication bias in datasets that used an opioid receptor agonist \nanticipated to decrease the surface area of secondary hypersensitivity")
+regtest <- metabias(meta_area_opioid_agonist, method.bias = "Begg")
+print(regtest)
+
+
+```
+
