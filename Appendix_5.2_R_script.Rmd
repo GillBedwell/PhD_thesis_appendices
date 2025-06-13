@@ -1,0 +1,2259 @@
+---
+title: "Secondary analysis for project CAIR: Association between CTQ and nociceptive outcomes"
+author: "Gill Bedwell"
+date: "`r format(Sys.Date(), '%d %b %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 5
+    df_print: paged
+  chunk_output_type: console
+  pdf_document: null
+  word_document: null
+---
+
+```{r setup, include=FALSE}
+# knitr setup
+knitr::opts_chunk$set(warning = FALSE,
+                      message = FALSE,
+                      fig.align = 'center',
+                      fig.path = 'formal_analysis/figures',
+                      fig.height = 5.5,
+                      fig.width = 7.5,
+                      fig.retina = 1)
+
+
+# Load packages
+library(readr)
+library(tidyverse)
+library(gtsummary)
+library(magrittr)
+library(ggplot2)
+library(readxl)
+library(dplyr)
+library(knitr)
+library(kableExtra)
+library(lmtest)
+library(performance)
+library(arsenal)
+library(tableone)
+library(patchwork)
+library(lmerTest)
+library(parameters)
+library(robustlmm)
+library(lmeresampler)
+library(sjPlot)
+library(visreg)
+library(car)
+library(MASS)
+library(ggeffects)
+library(robustlmm)
+library(pbapply)  
+
+#Import data
+cpm <- read_csv("hypo_2_cpm.csv")
+ts <- read_csv("hypo_2_ts.csv")
+sa <- read_csv("hypo_3_sa.csv")
+mag <- read_csv("hypo_3_mag.csv")
+ctq <- read.csv("ctq.csv")
+pss <- read.csv("pss_clean.csv")
+
+```
+
+# Summary statistics 
+```{r summary_stats}
+
+#Age 
+sa$sex <- as.factor(sa$sex)
+summary <- sa %>%
+  group_by(study_id) %>%
+  summarize(
+    sex = first(sex),
+    current_age = first(current_age),
+    ctq_score = first(ctq_score),
+    hfs_intensity = first(hfs_intensity),
+    mean_hfs_rating = first(mean_hfs_rating)) 
+
+age_tab <- tableby(sex ~ current_age, data = summary, numeric.stats =c("median", "q1q3", "range"))
+summary(age_tab, pfootnote=TRUE, text = TRUE)
+
+#CTQ
+sex_df <- sa %>%
+  dplyr::select(study_id,
+                sex) %>%
+  unique() 
+ctq_df <- merge(sex_df, ctq, by = "study_id")
+
+ctq_tab <- tableby(sex ~ ctq_score, data = ctq_df, numeric.stats =c("median", "q1q3", "range"))
+summary(ctq_tab, pfootnote=TRUE, text = TRUE)
+
+
+#physical abuse
+ctq_pa <- tableby(sex ~ physical_abuse, data = ctq_df, numeric.stats =c("median", "q1q3"))
+summary(ctq_pa, pfootnote=TRUE, text = TRUE)
+
+#emotional abuse
+ctq_ea <- tableby(sex ~ emotional_abuse, data = ctq_df, numeric.stats =c("median", "q1q3"))
+summary(ctq_ea, pfootnote=TRUE, text = TRUE)
+
+#sexual abuse
+ctq_sa <- tableby(sex ~ sexual_abuse, data = ctq_df, numeric.stats =c("median", "q1q3"))
+summary(ctq_sa, pfootnote=TRUE, text = TRUE)
+
+#physical neglect
+ctq_pn <- tableby(sex ~ physical_neglect, data = ctq_df, numeric.stats =c("median", "q1q3"))
+summary(ctq_pn, pfootnote=TRUE, text = TRUE)
+
+#emotional neglect
+ctq_en <- tableby(sex ~ emotional_neglect, data = ctq_df, numeric.stats =c("median", "q1q3"))
+summary(ctq_en, pfootnote=TRUE, text = TRUE)
+
+#HFS current
+summary %<>%
+  mutate(hfs_intensity_correct = hfs_intensity/10)
+hfs_cur_tab <- tableby(sex ~ hfs_intensity_correct, data = summary, numeric.stats =c("median", "q1q3"))
+summary(hfs_cur_tab, pfootnote=TRUE, text = TRUE)
+
+#HFS ratings 
+hfs_rate_tab <- tableby(sex ~ mean_hfs_rating, data = summary, numeric.stats =c("median", "q1q3"))
+summary(hfs_rate_tab, pfootnote=TRUE, text = TRUE)
+
+#Area of secondary hyperalgesia
+area_tab <- tableby(sex ~ area, data = sa, strata = time, numeric.stats =c("median", "q1q3"))
+summary(area_tab, pfootnote=TRUE, text = TRUE)
+
+#Magnitude of secondary hyperalgesia
+#Calculate the magnitude
+fu <- mag %>%
+  filter(!time == "0") %>%
+  dplyr::select(study_id,
+                time,
+                pinprick,
+                rating) %>%
+  unite("pinprick_time", pinprick, time, sep = "_") %>%
+  pivot_wider(names_from = pinprick_time, values_from = rating)
+
+
+bl <- mag %>%
+  filter(time == "0") %>%
+  dplyr::select(study_id,
+                rating,
+                pinprick) %>%
+  group_by(study_id, pinprick) %>%
+  mutate(mean_bl = mean(rating)) %>%
+  ungroup() %>%
+  dplyr::select(!rating) %>%
+  unique() %>%
+  pivot_wider(names_from = pinprick, values_from = mean_bl)
+
+mag_ed <- merge(bl, fu, by = "study_id")
+
+mag_ed %<>%
+  mutate(mag_35_128 = pp_128_35 - pp_128,
+         mag_50_128 = pp_128_50 - pp_128,
+         mag_65_128 = pp_128_65 - pp_128,
+         mag_35_256 = pp_256_35 - pp_256,
+         mag_50_256 = pp_256_50 - pp_256,
+         mag_65_256 = pp_256_65 - pp_256)
+
+mag_ed %<>%
+  pivot_longer(starts_with("mag"),
+    names_to = "variable",
+               values_to = "magnitude")
+
+# Separate the 'variable' column
+mag_ed %<>%
+  separate(variable, into = c("temp1", "modality"), sep = "_(?=[^_]+$)") %>% # separate at last underscore
+  rename(time_mag = temp1)
+
+mag <- merge(mag_ed, sa, by ="study_id") %>%
+  dplyr::select(study_id,
+                time_mag,
+                modality,
+                magnitude,
+                ctq_score,
+                pss_total,
+                sex,
+                current_age,
+                mean_hfs_rating,
+                hfs_intensity,
+                psqi_global_score,
+                mdd_diagnosis,
+                covid_in_prev_months,
+                other_illness,
+                chronic_illness_excl_mdd) %>%
+  unique()
+
+
+
+mag_tab <- tableby(sex ~ magnitude, data = mag, strata = time_mag, numeric.stats =c("median", "q1q3"))
+summary(mag_tab, pfootnote=TRUE, text = TRUE)
+
+#Temporal summation 
+ts_tab <- tableby(sex ~ session_1, data = ts, strata = site, numeric.stats =c("median", "q1q3"))
+summary(ts_tab, pfootnote=TRUE, text = TRUE)
+
+#Conditioned pain modulation 
+cpm_tab <- tableby(sex ~ session_1, data = cpm, strata = site, numeric.stats =c("median", "q1q3"))
+summary(cpm_tab, pfootnote=TRUE, text = TRUE)
+
+
+
+```
+
+# Predictor: CTQ
+## Surface area
+```{r sa}
+
+sa$sex <- as.factor(sa$sex)
+sa$mdd_diagnosis <- as.factor(sa$mdd_diagnosis)
+sa$covid_in_prev_months <- as.factor(sa$covid_in_prev_months)
+sa$other_illness <- as.factor(sa$other_illness)
+sa$chronic_illness_excl_mdd <- as.factor(sa$chronic_illness_excl_mdd)
+sa <- merge(sa, pss, by = "study_id")
+
+#Plot relationship between CTQ score and area of SH 
+ggplot(data = sa,
+       aes(x = ctq_score,
+           y = area)) +
+  geom_point(position = position_jitter(width = 0.3), alpha = 0.5) +
+  geom_smooth(method = "lm",  fill= "purple", color = "black") +
+  labs(title = "a)",
+       x = "CTQ-SF total score",
+       y = expression("Observed surface area of secondary hyperalgesia (cm"^2*")")) +  # Superscript for cm^2
+  theme_bw() +
+theme(aspect.ratio = 1) +
+   theme(axis.title.x = element_text(size = 12),
+        axis.title.y = element_text(size = 12))
+
+#Plot relationship between CTQ score and area of SH 
+ggplot(data = sa,
+       aes(x = ctq_score,
+           y = area,
+           colour = factor(sex))) +
+  geom_point(position = position_jitter(width = 0.3), alpha = 0.5) +
+  geom_smooth(method = "lm", aes(fill = factor(sex)),
+              alpha = 0.3, se = TRUE) +  # Fill the CI with color matching 'sex'+
+  scale_colour_manual(values = c("1" = "blue", "2" = "red"), 
+                      labels = c("1" = "Male", "2" = "Female")) +  # Set labels for sex
+  scale_fill_manual(values = c("1" = "blue", "2" = "red"), 
+                    labels = c("1" = "Male", "2" = "Female")) +
+  labs(title = "b)",
+       x = "CTQ-SF total score",
+       y = expression("Surface area of \nsecondary hyperalgesia (cm"^2*")"),   # Superscript for cm^2
+       colour = "Sex",  # Change the legend title to "Sex"
+       fill = "Sex") +  # Ensure fill legend title is also "Sex"
+theme_bw() +
+theme(aspect.ratio = 1)    +
+   theme(axis.title.x = element_text(size = 14),
+        axis.title.y = element_text(size = 14))
+
+# unadjusted model of main effect of CTQ on area
+model_sa <- lmer(area ~ ctq_score + (1|study_id), data = sa)
+
+# # Model assumptions and checks
+#Linearity: Plot residuals vs. fitted values
+plot(fitted(model_sa), resid(model_sa), main = "Residuals vs Fitted")
+abline(h = 0, col = "red")
+
+# 2. Normality of Residuals: Q-Q plot
+qqnorm(resid(model_sa))
+qqline(resid(model_sa), col = "red")
+ 
+# 3. Homoscedasticity: Scale-Location plot
+plot(fitted(model_sa), sqrt(abs(resid(model_sa))), main = "Scale-Location")
+abline(h = 0, col = "red")
+
+# unadjusted model of main effect of CTQ on area
+robust_model_sa <- rlmer(area ~ ctq_score + (1|study_id), data = sa)
+
+summary(robust_model_sa) # CTQ-SF predicts surface area of SH
+model_parameters(robust_model_sa)
+
+# unadjusted model with sex as an interaction term
+model_sa_sex <- rlmer(area ~ ctq_score*sex + (1|study_id), data = sa)
+
+# plot model assumptions
+plot(model_sa_sex) 
+
+summary(model_sa_sex) # CTQ-SF predicts surface area of SH
+model_parameters(model_sa_sex)
+
+sa %<>% mutate(hfs_intensity_correct = hfs_intensity/10)
+
+#Adjusted model with sex as interaction term
+model_sa_adj <- rlmer(area ~ ctq_score*sex + current_age + mean_hfs_rating + hfs_intensity_correct + pss_total_correct + psqi_global_score + mdd_diagnosis + covid_in_prev_months + other_illness + chronic_illness_excl_mdd + (1|study_id),  data = sa)
+
+n_boot <- 1000  # or however many bootstrap replicates you want
+
+#cluster bootstrap:
+# Define the cluster variable
+cluster_var <- "study_id"
+
+# Define a function to fit the model and extract coefficients using cluster bootstrapping
+boot_fun_cluster <- function(data, clusters) {
+  # Sample clusters with replacement
+  sampled_clusters <- sample(unique(data[[cluster_var]]), size = length(unique(data[[cluster_var]])), replace = TRUE)
+  
+  # Recombine all rows for the sampled clusters
+  boot_data <- do.call(rbind, lapply(sampled_clusters, function(clust) {
+    data[data[[cluster_var]] == clust, ]
+  }))
+  
+  # Refit model
+  tryCatch({
+    m <- rlmer(area ~ ctq_score*sex + current_age + mean_hfs_rating + hfs_intensity_correct +
+                 pss_total_correct + psqi_global_score + mdd_diagnosis + covid_in_prev_months +
+                 other_illness + chronic_illness_excl_mdd + (1 | study_id),
+               data = boot_data)
+    fixef(m)
+  }, error = function(e) {
+    rep(NA, length(fixef(model_sa_adj)))
+  })
+}
+
+# Run bootstrap
+set.seed(123)
+boot_results_cluster <- pblapply(1:n_boot, function(i) {
+  boot_fun_cluster(sa, cluster_var)
+})
+
+# Clean and summarize
+boot_mat_cluster <- do.call(rbind, boot_results_cluster)
+boot_mat_cluster <- boot_mat_cluster[complete.cases(boot_mat_cluster), ]
+boot_summary_cluster <- apply(boot_mat_cluster, 2, quantile, probs = c(0.025, 0.975))
+
+boot_summary_cluster
+
+#plotting bootstrapped model 
+library(ggplot2)
+library(dplyr)
+library(tibble)
+
+# Convert the boot_summary to a tidy data frame
+coef_names <- colnames(boot_mat_cluster)
+boot_df <- as.data.frame(t(boot_summary_cluster))
+boot_df <- rownames_to_column(boot_df, var = "term")
+colnames(boot_df)[2:3] <- c("ci_low", "ci_high")
+
+# OPTIONAL: Add point estimates from original model
+point_estimates <- fixef(model_sa_adj)
+boot_df$estimate <- point_estimates[boot_df$term]
+
+# Manually set the term order (match the order of your model)
+model_order <- c(
+  "(Intercept)", "ctq_score", "sex2", "current_age", "mean_hfs_rating", 
+  "hfs_intensity_correct", "pss_total_correct", "psqi_global_score", 
+  "mdd_diagnosis1", "covid_in_prev_months1", "other_illness1", 
+  "chronic_illness_excl_mdd1", "ctq_score:sex2"
+)
+
+# Define custom term labels in model order
+term_labels <- c(
+  "(Intercept)" = "Intercept",
+  "ctq_score" = "CTQ-SF score ",
+  "sex2" = "Sex (female)",
+  "current_age" = "Age",
+  "mean_hfs_rating" = "Mean rating of HFS induction",
+  "hfs_intensity_correct" = "HFS current intensity",
+  "pss_total_correct" = "PSS Score",
+  "psqi_global_score" = "PSQI Score",
+  "mdd_diagnosis1" = "Diagnosis of major depressive disorder",
+  "covid_in_prev_months1" = "Recent COVID-19 infection",
+  "other_illness1" = "Recent acute illness",
+  "chronic_illness_excl_mdd1" = "Diagnosis of Chronic illness",
+  "ctq_score:sex2" = "CTQ-SF score × Sex (female)"
+)
+
+# Clean and prepare your dataframe
+boot_df <- boot_df %>%
+  filter(term %in% model_order) %>%  # make sure all terms are valid
+  mutate(
+    term = factor(term, levels = model_order),  # order terms correctly
+    label = term_labels[as.character(term)],      # rename for plot
+    label = factor(label, levels = term_labels[model_order]),  # ensure correct plot order
+    sig = ifelse(ci_low > 0 | ci_high < 0, "Significant", "Not Significant"),
+    ci_text = sprintf("[%.2f, %.2f]", ci_low, ci_high)
+  )
+
+# Original model 95% CI from standard errors
+se_original <- sqrt(diag(vcov(model_sa_adj)))  # Standard errors
+ci_original_lower <- fixef(model_sa_adj) - 1.96 * se_original  # Lower bound
+ci_original_upper <- fixef(model_sa_adj) + 1.96 * se_original  # Upper bound
+
+# Create a data frame for the CI of the original model
+ci_original_df <- data.frame(
+  term = names(fixef(model_sa_adj)),
+  ci_original_lower = ci_original_lower,
+  ci_original_upper = ci_original_upper
+)
+# Join this with your bootstrapped results
+boot_df <- boot_df %>%
+  left_join(ci_original_df, by = "term")
+
+
+#plot
+ggplot(boot_df, aes(x = estimate, y = fct_rev(label), color = sig)) +
+  geom_point(size = 3.5, shape = 16) + #bootstrapped estimate in filled circle. 
+  geom_errorbarh(aes(xmin = ci_low, xmax = ci_high), height = 0.25, color = "black") + # Bootstrapped 95% CI
+  #Original robust model 95%CI 
+  geom_errorbar(aes(xmin = ci_original_lower, xmax = ci_original_upper), colour = "blue", linetype = "dotted"
+  ) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "orange") + # Reference line at 0
+    scale_color_manual(values = c("Significant" = "red", "Not Significant" = "gray70")) +
+  geom_text(aes(label = ci_text, color = sig), 
+            hjust = -0.1, #keeps it to the right of the error bar
+            vjust = -0.5, #nudges it above the error bar
+            size = 4, color = "black") +
+  labs(
+    title = "Bootstrapped 95% Confidence Intervals for Fixed Effects",
+    x = "Estimate (with 95% CI)",
+    y = "Predictors",
+    color = "Significance"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "top")
+
+# adjusted model WITHOUT sex as an interaction term 
+model_sa_adj_no_sex <- rlmer(area ~ ctq_score + current_age + mean_hfs_rating + hfs_intensity_correct + pss_total_correct + psqi_global_score + mdd_diagnosis + covid_in_prev_months + other_illness + chronic_illness_excl_mdd + (1|study_id),  data = sa)
+
+plot_no_int <- ggpredict(model_sa_adj_no_sex, terms = "ctq_score")
+
+
+sa2_no_interaction <- ggplot(plot_no_int, aes(x = x,
+                 y = predicted)) +
+  # Add geom_point for observed data
+  geom_point(data = sa, aes(x = ctq_score, y = area), color = "black", alpha = 0.6) +  # Observed points
+  geom_line(size = 1.2) +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high), fill = "purple", alpha = 0.2, show.legend = FALSE) +
+  labs(title = "a)",
+       x = "CTQ-SF total score",
+       y = expression("Surface area of secondary hyperalgesia (cm"^2*")")) +
+  theme_bw() +
+  theme(axis.title.x = element_text(size = 14),
+        axis.title.y = element_text(size = 14))
+
+plot_model(model_sa_adj, type = "int", terms = "ctq_score", "sex")
+
+#Plot predicted values with the interaction term sex
+pred <- ggpredict(model_sa_adj, terms = c("ctq_score", "sex"))
+
+sa2 <- ggplot(pred, aes(x = x,
+                 y = predicted,
+                 color = as.factor(group))) +
+  geom_line(size = 1.2) +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high, fill = as.factor(group)), alpha = 0.2, colour = NA) +
+ scale_color_manual(values = c("2" = "red", "1" = "blue"),  # Map colors to the numbers
+                     labels = c("1" = "Males", "2" = "Females")) +  # Correctly map numbers to text labels
+  scale_fill_manual(values = c("2" = "red", "1" = "blue"),
+                    labels = c("1" = "Males", "2" = "Females")) +  # Same here for fill
+       geom_point(data = sa, aes(x = ctq_score, y = area, color = as.factor(sex)), alpha = 0.6) +  # Observed points
+   labs(title = "b)",
+    x = "CTQ-SF total score",
+       y = NULL,
+       colour = "Sex",
+       fill = "Sex") +
+  theme_bw() +
+theme(aspect.ratio = 1) +
+   theme(axis.title.x = element_text(size = 12))
+
+         sa_plots <- sa2_no_interaction + sa2 +
+           plot_annotation(caption = "CTQ-SF total score") &
+           theme(axis.title.x = element_blank(),
+                 plot.caption = element_text(hjust = 0.5, size = 14, margin = margin(t=5)))
+
+ggsave("sa_plots.png", plot = sa_plots, width = 10, height = 10, dpi = 300) # dpi = 300 for high resolution
+
+table_sa <- sjPlot::tab_model(model_sa, model_sa_sex, model_sa_adj,
+                                       dv.labels = c("Unadjusted model of main effect","Unadjusted model with sex interaction term", "Adjusted model with sex interaction term"),
+                                       pred.labels = c("Intercept", "CTQ-SF score", "Sex (female)", "CTQ-SF score x sex (female)", "Age", "Mean SPARS rating for HFS", "HFS current intensity", "PSS score", "PSQI score", "Diagnosis of major depressive disorder", "Recent COVID-19", "Recent acute illness", "Diagnosis of chronic illness"))
+                              print(table_sa)
+
+```
+
+
+## Magnitude
+```{r mag}
+mag$sex <- as.factor(mag$sex)
+mag$mdd_diagnosis <- as.factor(mag$mdd_diagnosis)
+mag$covid_in_prev_months <- as.factor(mag$covid_in_prev_months)
+mag$other_illness <- as.factor(mag$other_illness)
+mag$chronic_illness_excl_mdd <- as.factor(mag$chronic_illness_excl_mdd)
+mag$modality <- as.factor(mag$modality)
+mag$time_mag <- as.factor(mag$time_mag)
+
+mag <- merge(pss, mag, by = "study_id")
+
+mag1 <- ggplot(data = mag,
+       aes(x = ctq_score,
+           y = magnitude)) +
+  geom_point(position = position_jitter(width = 0.3), alpha = 0.5) +
+  geom_smooth(method = "lm",  fill= "purple", color = "black") +
+  labs(title = "a)",
+       x = "CTQ-SF total score",
+       y = "Observed magnitude of secondary hyperalgesia (SPARS)") +
+  theme_bw() +
+theme(aspect.ratio = 1) +
+   theme(axis.title.x = element_text(size = 12),
+        axis.title.y = element_text(size = 12))
+
+mag2 <-ggplot(data = mag,
+       aes(x = ctq_score,
+           y = magnitude,
+           colour = factor(sex))) +
+geom_point(position = position_jitter(width = 0.3), alpha = 0.5) +
+  geom_smooth(method = "lm", aes(fill = factor(sex)),
+              alpha = 0.3, se = TRUE) +  
+  scale_colour_manual(values = c("1" = "blue", "2" = "red"), 
+                      labels = c("1" = "Male", "2" = "Female")) +  # Set labels for sex
+  scale_fill_manual(values = c("1" = "blue", "2" = "red"), 
+                    labels = c("1" = "Male", "2" = "Female")) +
+  labs(title = "b)",
+       x = "Total score on the CTQ-SF",
+       y = "Magnitude of secondary hyperalgesia (SPARS)",
+              colour = "Sex",  # Change the legend title to "Sex"
+       fill = "Sex") +  # Ensure fill legend title is also "Sex"
+theme_bw() +
+theme(aspect.ratio = 1)    +
+   theme(axis.title.x = element_text(size = 14),
+        axis.title.y = element_text(size = 14))
+
+mag1 + mag2
+
+# unadjusted model of main effect of CTQ on magnitude
+model_mag <- rlmer(magnitude ~ ctq_score + (1|study_id/modality), data = mag)
+
+# # Model assumptions and checks
+#Linearity: Plot residuals vs. fitted values
+plot(fitted(model_mag), resid(model_mag), main = "Residuals vs Fitted")
+abline(h = 0, col = "red")
+
+# 2. Normality of Residuals: Q-Q plot
+qqnorm(resid(model_mag))
+qqline(resid(model_mag), col = "red")
+ 
+plot(model_mag)
+
+model_parameters(model_mag)
+
+# unadjusted model with sex as an interaction term
+model_mag_sex <- rlmer(magnitude ~ ctq_score*sex + (1|study_id/modality), data = mag)
+plot(model_mag)
+model_parameters(model_mag_sex)
+
+mag%<>% mutate(hfs_intensity_correct = hfs_intensity/10)
+
+# Adjusted model with sex as an interaction term
+model_mag_adj <- rlmer(magnitude ~ ctq_score*sex + current_age + mean_hfs_rating + hfs_intensity_correct + pss_total_correct + psqi_global_score + mdd_diagnosis + covid_in_prev_months + other_illness + chronic_illness_excl_mdd + (1|study_id/modality), data = mag)
+
+model_mag_adj <- rlmer(rating ~ ctq_score*pre_post + (1|study_id/pinprick), data = mag)
+
+summary(model_mag_adj)
+
+plot(model_mag_adj)
+model_parameters(model_mag_adj)
+
+#bootstrapping robust model with cluster bootstrap:
+# Define the cluster variable
+cluster_var_mag <- "study_id"
+
+# Define a function to fit the model and extract coefficients using cluster bootstrapping
+boot_fun_cluster <- function(data, clusters) {
+  # Sample clusters with replacement
+  sampled_clusters <- sample(unique(data[[cluster_var_mag]]), size = length(unique(data[[cluster_var_mag]])), replace = TRUE)
+  
+  # Recombine all rows for the sampled clusters
+  boot_data_mag <- do.call(rbind, lapply(sampled_clusters, function(clust) {
+    data[data[[cluster_var_mag]] == clust, ]
+  }))
+  
+  # Refit model
+  tryCatch({
+    mag_m <- rlmer(magnitude ~ ctq_score*sex + current_age + mean_hfs_rating + hfs_intensity_correct +
+                 pss_total_correct + psqi_global_score + mdd_diagnosis + covid_in_prev_months +
+                 other_illness + chronic_illness_excl_mdd + (1|study_id/modality),
+               data = boot_data_mag)
+    fixef(mag_m)
+  }, error = function(e) {
+    rep(NA, length(fixef(model_mag_adj)))
+  })
+}
+
+# Run bootstrap
+set.seed(123)
+boot_results_cluster_mag <- pblapply(1:n_boot, function(i) {
+  boot_fun_cluster(mag, cluster_var_mag)
+})
+
+# Clean and summarize
+boot_mat_cluster_mag <- do.call(rbind, boot_results_cluster_mag)
+boot_mat_cluster_mag <- boot_mat_cluster_mag[complete.cases(boot_mat_cluster_mag), ]
+boot_summary_cluster_mag <- apply(boot_mat_cluster_mag, 2, quantile, probs = c(0.025, 0.975))
+
+boot_summary_cluster_mag
+
+#plotting bootstrapped model 
+library(ggplot2)
+library(dplyr)
+library(tibble)
+
+# Convert the boot_summary to a tidy data frame
+coef_names_mag <- colnames(boot_mat_cluster_mag)
+boot_df_mag <- as.data.frame(t(boot_summary_cluster_mag))
+boot_df_mag <- rownames_to_column(boot_df_mag, var = "term")
+colnames(boot_df_mag)[2:3] <- c("ci_low", "ci_high")
+
+# OPTIONAL: Add point estimates from original model
+point_estimates_mag <- fixef(model_mag_adj)
+boot_df_mag$estimate_mag <- point_estimates_mag[boot_df_mag$term]
+
+# Manually set the term order (match the order of your model)
+model_order_mag <- c(
+  "(Intercept)", "ctq_score", "sex2", "current_age", "mean_hfs_rating", 
+  "hfs_intensity_correct", "pss_total_correct", "psqi_global_score", 
+  "mdd_diagnosis1", "covid_in_prev_months1", "other_illness1", 
+  "chronic_illness_excl_mdd1", "ctq_score:sex2"
+)
+
+# Define custom term labels in model order
+term_labels_mag <- c(
+  "(Intercept)" = "Intercept",
+  "ctq_score" = "CTQ-SF score ",
+  "sex2" = "Sex (female)",
+  "current_age" = "Age",
+  "mean_hfs_rating" = "Mean rating of HFS induction",
+  "hfs_intensity_correct" = "HFS current intensity",
+  "pss_total_correct" = "PSS Score",
+  "psqi_global_score" = "PSQI Score",
+  "mdd_diagnosis1" = "Diagnosis of major depressive disorder",
+  "covid_in_prev_months1" = "Recent COVID-19 infection",
+  "other_illness1" = "Recent acute illness",
+  "chronic_illness_excl_mdd1" = "Diagnosis of Chronic illness",
+  "ctq_score:sex2" = "CTQ-SF score × Sex (female)"
+)
+
+# Clean and prepare your dataframe
+boot_df_mag <- boot_df_mag %>%
+  filter(term %in% model_order_mag) %>%  # make sure all terms are valid
+  mutate(
+    term = factor(term, levels = model_order_mag),  # order terms correctly
+    label = term_labels_mag[as.character(term)],      # rename for plot
+    label = factor(label, levels = term_labels_mag[model_order_mag]),  # ensure correct plot order
+    sig = ifelse(ci_low > 0 | ci_high < 0, "Significant", "Not Significant"),
+    ci_text = sprintf("[%.2f, %.2f]", ci_low, ci_high)
+  )
+
+# Original model 95% CI from standard errors
+se_original_mag <- sqrt(diag(vcov(model_mag_adj)))  # Standard errors
+ci_original_lower_mag <- fixef(model_mag_adj) - 1.96 * se_original_mag  # Lower bound
+ci_original_upper_mag <- fixef(model_mag_adj) + 1.96 * se_original_mag  # Upper bound
+
+# Create a data frame for the CI of the original model
+ci_original_df_mag <- data.frame(
+  term = names(fixef(model_mag_adj)),
+  ci_original_lower_mag = ci_original_lower_mag,
+  ci_original_upper_mag = ci_original_upper_mag
+)
+# Join this with your bootstrapped results
+boot_df_mag <- boot_df_mag %>%
+  left_join(ci_original_df_mag, by = "term")
+
+#plot
+ggplot(boot_df_mag, aes(x = estimate_mag, y = fct_rev(label), color = sig)) +
+  geom_point(size = 3.5, shape = 16) + #bootstrapped estimate in filled circle. 
+  geom_errorbarh(aes(xmin = ci_low, xmax = ci_high), height = 0.25, color = "black") + # Bootstrapped 95% CI
+  #Original robust model 95%CI 
+  geom_errorbar(aes(xmin = ci_original_lower_mag, xmax = ci_original_upper_mag), colour = "blue", linetype = "dotted"
+  ) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "orange") + # Reference line at 0
+    scale_color_manual(values = c("Significant" = "red", "Not Significant" = "gray70")) +
+  geom_text(aes(label = ci_text, color = sig), 
+            hjust = -0.1, #keeps it to the right of the error bar
+            vjust = -0.5, #nudges it above the error bar
+            size = 4, color = "black") +
+  labs(
+    title = "Bootstrapped 95% Confidence Intervals for Fixed Effects",
+    x = "Estimate (with 95% CI)",
+    y = "Predictors",
+    color = "Significance"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "top")
+
+model_mag_adj_no_sex <- rlmer(magnitude ~ ctq_score + current_age + mean_hfs_rating + hfs_intensity_correct + pss_total_correct + psqi_global_score + mdd_diagnosis + covid_in_prev_months + other_illness + chronic_illness_excl_mdd + (1|study_id/modality), data = mag)
+
+plot_no_int <- ggpredict(model_mag_adj_no_sex, terms = "ctq_score")
+
+mag_no_interaction <- ggplot(plot_no_int, aes(x = x,
+                 y = predicted)) +
+  # Add geom_point for observed data
+  geom_point(data = mag, aes(x = ctq_score, y = magnitude), color = "black", alpha = 0.6) +  # Observed points
+  geom_line(size = 1.2) +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high), fill = "purple", alpha = 0.2, show.legend = FALSE) +
+  labs(title = "a)",
+       x = "CTQ-SF total score",
+       y = "Magnitude of secondary hyperalgesia") +
+  theme_bw() +
+  theme(axis.title.x = element_text(size = 14),
+        axis.title.y = element_text(size = 14))
+
+#Plot predicted values with the interaction term sex
+pred <- ggpredict(model_mag_adj, terms = c("ctq_score", "sex"))
+
+mag2 <- ggplot(pred, aes(x = x,
+                 y = predicted,
+                 color = as.factor(group))) +
+  geom_line(size = 1.2) +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high, fill = as.factor(group)), alpha = 0.2, colour = NA) +
+ scale_color_manual(values = c("2" = "red", "1" = "blue"),  # Map colors to the numbers
+                     labels = c("1" = "Males", "2" = "Females")) +  # Correctly map numbers to text labels
+  scale_fill_manual(values = c("2" = "red", "1" = "blue"),
+                    labels = c("1" = "Males", "2" = "Females")) +  # Same here for fill
+       geom_point(data = mag, aes(x = ctq_score, y = magnitude, color = as.factor(sex)), alpha = 0.6) +  # Observed points
+   labs(title = "b)",
+    x = "CTQ-SF total score",
+       y = NULL,
+       colour = "Sex",
+       fill = "Sex") +
+  theme_bw() +
+theme(aspect.ratio = 1) +
+   theme(axis.title.x = element_text(size = 12))
+
+         mag_plots <- mag_no_interaction + mag2 +
+           plot_annotation(caption = "CTQ-SF total score") &
+           theme(axis.title.x = element_blank(),
+                 plot.caption = element_text(hjust = 0.5, size = 14, margin = margin(t=5)))
+
+ggsave("mag_plots.png", plot = mag_plots, width = 10, height = 10, dpi = 300) # dpi = 300 for high resolution
+
+mag_plots <- mag1 +mag2
+
+ggsave("mag_plots.png", plot = mag_plots, width = 10, height = 10, dpi = 300) # dpi = 300 for high resolution
+
+table_mag <- sjPlot::tab_model(model_mag, model_mag_sex, model_mag_adj,
+                                       dv.labels = c("Unadjusted model of main effect","Unadjusted model with sex interaction term", "Adjusted model with sex interaction term"),
+                                       pred.labels = c("Intercept", "CTQ-SF score", "Sex (female)", "CTQ-SF score x sex (female)", "Age", "Mean SPARS rating for HFS", "HFS current intensity", "PSS score", "PSQI score", "Diagnosis of major depressive disorder", "Recent COVID-19", "Recent acute illness", "Diagnosis of chronic illness"))
+                              print(table_mag)
+
+```
+
+## CPM
+```{r cpm}
+#Plot relationship between CTQ score and CPM 
+cpm$sex <- as.factor(cpm$sex)
+cpm$mdd_diagnosis <- as.factor(cpm$mdd_diagnosis)
+cpm$covid_in_prev_months <- as.factor(cpm$covid_in_prev_months)
+cpm$other_illness <- as.factor(cpm$other_illness)
+cpm$chronic_illness_excl_mdd <- as.factor(cpm$chronic_illness_excl_mdd)
+cpm <- merge(cpm, pss, by = "study_id")
+
+cpm_lumbar <- cpm %>%
+  filter(site =="lumbar")
+
+cpm_deltoid <- cpm %>%
+  filter(site =="deltoid")
+
+cpm$site <- factor(cpm$site, levels = c("lumbar", "deltoid")) #Re-order 'levels' of site so that lumbar site is shown first in the plot. 
+
+cpm1 <- ggplot(data = cpm,
+       aes(x = ctq_score,
+           y = session_1)) +
+geom_point(position = position_jitter(width = 0.3), alpha = 0.5) +
+  geom_smooth(method = "lm",  fill= "purple", color = "black") +
+  facet_wrap(~site, labeller = as_labeller(c("lumbar" = "Lumbar test site", "deltoid" = "Deltoid test site"))) +
+  labs(
+       x = "Total score on the CTQ-SF",
+       y = "Conditioned pain modulation (N)") +
+  theme_bw() +
+theme(aspect.ratio = 1) +
+   theme(axis.title.x = element_text(size = 14),
+        axis.title.y = element_text(size = 14))
+
+cpm2 <- ggplot(data = cpm,
+       aes(x = ctq_score,
+           y = session_1,
+           colour = factor(sex))) +
+  facet_wrap(~site, labeller = as_labeller(c("lumbar" = "Lumbar test site", "deltoid" = "Deltoid test site"))) +
+  geom_point(position = position_jitter(width = 0.3), alpha = 0.5) +
+  geom_smooth(method = "lm", aes(fill = factor(sex)),
+              alpha = 0.3, se = TRUE) +  
+  scale_colour_manual(values = c("1" = "blue", "2" = "red"), 
+                      labels = c("1" = "Male", "2" = "Female")) +  # Set labels for sex
+  scale_fill_manual(values = c("1" = "blue", "2" = "red"), 
+                    labels = c("1" = "Male", "2" = "Female")) +
+  labs(
+       x = "Total score on the CTQ-SF",
+       y = "Conditioned pain modulation (N)",
+              colour = "Sex",  # Change the legend title to "Sex"
+       fill = "Sex") +  # Ensure fill legend title is also "Sex"
+theme_bw() +
+theme(aspect.ratio = 1)    +
+   theme(axis.title.x = element_text(size = 14),
+        axis.title.y = element_text(size = 14))
+
+cpm1 + cpm2
+
+# Set plotting area to 2 rows and 2 columns
+par(mfrow = c(2, 2))
+
+#Unadjusted model of main effect of CTQ on CPM
+#Lumbar
+cpm_lx <- lm(session_1 ~ ctq_score, data = cpm_lumbar)
+
+#Plot diagnostic plots
+plot(cpm_lx)
+model_parameters(cpm_lx) # No main effect of CTQ on CPM at lumbar
+
+#Deltoid
+cpm_delt <- lm(session_1 ~ ctq_score, data = cpm_deltoid)
+
+#Plot diagnostic plots
+plot(cpm_delt)
+model_parameters(cpm_delt)  # No main effect of CTQ on CPM at lumbar
+
+#Unadjusted model with sex as interaction term
+#Lumbar
+cpm_lx_sex <- lm(session_1 ~ ctq_score*sex, data = cpm_lumbar)
+
+plot(cpm_lx_sex)
+model_parameters(cpm_lx_sex) # No change
+
+#Deltoid
+cpm_delt_sex <- lm(session_1 ~ ctq_score*sex, data = cpm_deltoid)
+
+plot(cpm_delt_sex)
+model_parameters(cpm_delt_sex)  # No change
+
+#Adjusted
+#Lumbar
+cpm_lx_adj <-lm(session_1 ~ ctq_score*sex + current_age + pss_total_correct + psqi_global_score  + mdd_diagnosis + covid_in_prev_months + other_illness + chronic_illness_excl_mdd, data = cpm_lumbar)
+
+#Removing sex as an interaction term
+cpm_lx_adj_no_int <-lm(session_1 ~ ctq_score + current_age + pss_total_correct + psqi_global_score  + mdd_diagnosis + covid_in_prev_months + other_illness + chronic_illness_excl_mdd, data = cpm_lumbar)
+
+plot(cpm_lx_adj)
+summary(cpm_lx_adj) # CTQ-SF does not predicts CPM at lumbar
+model_parameters(cpm_lx_adj)
+
+#Deltoid
+cpm_delt_adj <-lm(session_1 ~ ctq_score*sex + current_age + pss_total_correct + psqi_global_score + mdd_diagnosis + covid_in_prev_months + other_illness + chronic_illness_excl_mdd, data = cpm_deltoid)
+
+#Removing sex as an interaction term
+cpm_delt_adj_no_int <-lm(session_1 ~ ctq_score + current_age + pss_total_correct + psqi_global_score + mdd_diagnosis + covid_in_prev_months + other_illness + chronic_illness_excl_mdd, data = cpm_deltoid)
+
+plot(cpm_delt_adj)
+summary(cpm_delt_adj) # CTQ-SF does not predicts CPM at lumbar
+model_parameters(cpm_delt_adj)
+
+
+#deltoid site
+plot_no_int_cpm <- ggpredict(cpm_delt_adj_no_int, terms = "ctq_score")
+
+cpm_no_interaction <- ggplot(plot_no_int_cpm, aes(x = x,
+                 y = predicted)) +
+  # Add geom_point for observed data
+  geom_point(data = cpm_deltoid, aes(x = ctq_score, y = session_1), color = "black", alpha = 0.6) +  # Observed points
+  geom_line(size = 1.2) +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high), fill = "purple", alpha = 0.2, show.legend = FALSE) +
+  labs(title = "a)",
+       x = "CTQ-SF total score",
+       y = "Conditioned pain modulation (N)") +
+  theme_bw() +
+  theme(axis.title.x = element_text(size = 14),
+        axis.title.y = element_text(size = 14))
+
+#Plot predicted values with the interaction term sex at deltoid
+pred <- ggpredict(cpm_delt_adj, terms = c("ctq_score", "sex"))
+
+cpm2 <- ggplot(pred, aes(x = x,
+                 y = predicted,
+                 color = as.factor(group))) +
+  geom_line(size = 1.2) +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high, fill = as.factor(group)), alpha = 0.2, colour = NA) +
+ scale_color_manual(values = c("2" = "red", "1" = "blue"),  # Map colors to the numbers
+                     labels = c("1" = "Males", "2" = "Females")) +  # Correctly map numbers to text labels
+  scale_fill_manual(values = c("2" = "red", "1" = "blue"),
+                    labels = c("1" = "Males", "2" = "Females")) +  # Same here for fill
+       geom_point(data = cpm_deltoid, aes(x = ctq_score, y = session_1, color = as.factor(sex)), alpha = 0.6) +  # Observed points
+   labs(title = "b)",
+    x = "CTQ-SF total score",
+       y = NULL,
+       colour = "Sex",
+       fill = "Sex") +
+  theme_bw() +
+theme(aspect.ratio = 1) +
+   theme(axis.title.x = element_text(size = 12))
+
+         cpm_plots <- cpm_no_interaction / cpm2 +
+           plot_annotation(caption = "CTQ-SF total score") &
+           theme(axis.title.x = element_blank(),
+                 plot.caption = element_text(hjust = 0.5, size = 14, margin = margin(t=5)))
+
+ggsave("cpm_plots.png", plot = cpm_plots, width = 10, height = 10, dpi = 300) # dpi = 300 for high resolution
+
+tab_cpm_lx <- sjPlot::tab_model(cpm_lx, cpm_lx_sex, cpm_lx_adj,
+                                       dv.labels = c("Unadjusted model of main effect","Unadjusted model with sex interaction term", "Adjusted model with sex interaction term"),
+                                       pred.labels = c("Intercept", "CTQ-SF score", "Sex (female)", "CTQ-SF score x sex (female)", "Age", "PSS score", "PSQI score", "Diagnosis of major depressive disorder", "Recent COVID-19", "Recent acute illness", "Diagnosis of chronic illness"))
+                              print(tab_cpm_lx)
+                              
+tab_cpm_delt <- sjPlot::tab_model(cpm_delt, cpm_delt_sex, cpm_delt_adj,
+                                       dv.labels = c("Unadjusted model of main effect","Unadjusted model with sex interaction term", "Adjusted model with sex interaction term"),
+                                       pred.labels = c("Intercept", "CTQ-SF score", "Sex (female)", "CTQ-SF score x sex (female)", "Age", "PSS score", "PSQI score", "Diagnosis of major depressive disorder", "Recent COVID-19", "Recent acute illness", "Diagnosis of chronic illness"))
+                              print(tab_cpm_delt)
+
+```
+
+
+## TS
+```{r ts}
+ts$sex <- as.factor(ts$sex)
+ts$mdd_diagnosis <- as.factor(ts$mdd_diagnosis)
+ts$covid_in_prev_months <- as.factor(ts$covid_in_prev_months)
+ts$other_illness <- as.factor(ts$other_illness)
+ts$chronic_illness_excl_mdd <- as.factor(ts$chronic_illness_excl_mdd)
+ts <- merge(ts, pss, by = "study_id")
+
+ts_lumbar <- ts %>%
+  filter(site =="lumbar")
+
+ts_deltoid <- ts %>%
+  filter(site =="deltoid")
+
+ts$site <- factor(ts$site, levels = c("lumbar", "deltoid")) #Re-order 'levels' of site so that lumbar site is shown first in the plot. 
+
+ts1 <- ggplot(data = ts,
+       aes(x = ctq_score,
+           y = session_1)) +
+geom_point(position = position_jitter(width = 0.3), alpha = 0.5) +
+  geom_smooth(method = "lm",  fill= "purple", color = "black") +
+  facet_wrap(~site, labeller = as_labeller(c("lumbar" = "Lumbar test site", "deltoid" = "Deltoid test site"))) +
+  labs(x = "Total score on the CTQ-SF",
+       y = "Temporal summation (SPARS)") +
+  theme_bw() +
+theme(aspect.ratio = 1) +
+   theme(axis.title.x = element_text(size = 14),
+        axis.title.y = element_text(size = 14))
+
+ts2 <- ggplot(data = ts,
+       aes(x = ctq_score,
+           y = session_1,
+           colour = factor(sex))) +
+facet_wrap(~site, labeller = as_labeller(c("lumbar" = "Lumbar test site", "deltoid" = "Deltoid test site"))) +
+  geom_point(position = position_jitter(width = 0.3), alpha = 0.5) +
+  geom_smooth(method = "lm", aes(fill = factor(sex)),
+              alpha = 0.3, se = TRUE) +  
+  scale_colour_manual(values = c("1" = "blue", "2" = "red"), 
+                      labels = c("1" = "Male", "2" = "Female")) +  # Set labels for sex
+  scale_fill_manual(values = c("1" = "blue", "2" = "red"), 
+                    labels = c("1" = "Male", "2" = "Female")) +
+  labs(
+       x = "Total score on the CTQ-SF",
+       y = "Temporal summation (SPARS)",
+              colour = "Sex",  # Change the legend title to "Sex"
+       fill = "Sex") +  # Ensure fill legend title is also "Sex"
+theme_bw() +
+theme(aspect.ratio = 1,
+          legend.position = "none")   +
+   theme(axis.title.x = element_text(size = 14),
+        axis.title.y = element_text(size = 14))
+
+ts1 +ts2
+
+#Unadjusted model of main effect of CTQ on TS
+#Lumbar
+ts_lx <- lm(session_1 ~ ctq_score, data = ts_lumbar)
+
+#Plot diagnostic plots
+plot(ts_lx)
+model_parameters(ts_lx) # No main effect of CTQ on TS at lumbar
+
+#Deltoid
+ts_delt <- lm(session_1 ~ ctq_score, data = ts_deltoid)
+
+#Plot diagnostic plots
+plot(ts_delt)
+model_parameters(ts_delt) # No main effect of CTQ on TS at deltoid
+
+#Unadjusted model with sex as interaction term
+#Lumbar
+ts_lx_sex <- lm(session_1 ~ ctq_score*sex, data = ts_lumbar)
+
+#Plot diagnostic plots
+plot(ts_lx_sex)
+model_parameters(ts_lx_sex) # No change
+
+#Deltoid
+ts_delt_sex <- lm(session_1 ~ ctq_score*sex, data = ts_deltoid)
+
+#Plot diagnostic plots
+plot(ts_delt_sex)
+model_parameters(ts_delt_sex) # No change
+
+#Adjusted
+#Lumbar
+ts_lx_adj <-lm(session_1 ~ ctq_score*sex + current_age +  pss_total_correct + psqi_global_score + mdd_diagnosis + covid_in_prev_months + other_illness + chronic_illness_excl_mdd, data = ts_lumbar)
+
+#Removing sex as an interaction term
+ts_lx_adj_no_int <-lm(session_1 ~ ctq_score + current_age +  pss_total_correct + psqi_global_score + mdd_diagnosis + covid_in_prev_months + other_illness + chronic_illness_excl_mdd, data = ts_lumbar)
+
+#Plot diagnostic plots
+plot(ts_lx_adj)
+model_parameters(ts_lx_adj) # No linear relationship
+
+#Deltoid
+ts_delt_adj <-lm(session_1 ~ ctq_score*sex + current_age + pss_total_correct + psqi_global_score  + mdd_diagnosis + covid_in_prev_months + other_illness + chronic_illness_excl_mdd, data = ts_deltoid)
+
+#Remove sex as an interaction term
+ts_delt_adj_no_int <-lm(session_1 ~ ctq_score + current_age + pss_total_correct + psqi_global_score  + mdd_diagnosis + covid_in_prev_months + other_illness + chronic_illness_excl_mdd, data = ts_deltoid)
+
+#Plot diagnostic plots
+plot(ts_delt_adj)
+model_parameters(ts_delt_adj) # No linear relationship
+
+#Plot lumbar site
+plot_no_int <- ggpredict(ts_lx_adj_no_int, terms = "ctq_score")
+
+ts_no_interaction <- ggplot(plot_no_int, aes(x = x,
+                 y = predicted)) +
+  # Add geom_point for observed data
+  geom_point(data = ts_lumbar, aes(x = ctq_score, y = session_1), color = "black", alpha = 0.6) +  # Observed points
+  geom_line(linewidth = 1.2) +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high), fill = "purple", alpha = 0.2, show.legend = FALSE) +
+  labs(title = "a)",
+       x = "CTQ-SF total score",
+       y = "Temporal summation (SPARS)") +
+  theme_bw() +
+  theme(axis.title.x = element_text(size = 14),
+        axis.title.y = element_text(size = 14))
+
+
+#Plot predicted values with the interaction term sex
+pred <- ggpredict(ts_lx_adj, terms = c("ctq_score", "sex"))
+
+ts2 <- ggplot(pred, aes(x = x,
+                 y = predicted,
+                 color = as.factor(group))) +
+  geom_line(size = 1.2) +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high, fill = as.factor(group)), alpha = 0.2, colour = NA) +
+ scale_color_manual(values = c("2" = "red", "1" = "blue"),  # Map colors to the numbers
+                     labels = c("1" = "Males", "2" = "Females")) +  # Correctly map numbers to text labels
+  scale_fill_manual(values = c("2" = "red", "1" = "blue"),
+                    labels = c("1" = "Males", "2" = "Females")) +  # Same here for fill
+       geom_point(data = ts_lumbar, aes(x = ctq_score, y = session_1, color = as.factor(sex)), alpha = 0.6) +  # Observed points
+   labs(title = "b)",
+    x = "CTQ-SF total score",
+       y = NULL,
+       colour = "Sex",
+       fill = "Sex") +
+  theme_bw() +
+theme(aspect.ratio = 1) +
+   theme(axis.title.x = element_text(size = 12))
+
+         ts_plots <- ts_no_interaction / ts2 +
+           plot_annotation(caption = "CTQ-SF total score") &
+           theme(axis.title.x = element_blank(),
+                 plot.caption = element_text(hjust = 0.5, size = 14, margin = margin(t=5)))
+
+ggsave("ts_plots.png", plot = ts_plots, width = 10, height = 10, dpi = 300) # dpi = 300 for high resolution
+
+
+#Plot deltoid site
+plot_no_int <- ggpredict(ts_delt_adj_no_int, terms = "ctq_score")
+
+ts_no_interaction <- ggplot(plot_no_int, aes(x = x,
+                 y = predicted)) +
+  # Add geom_point for observed data
+  geom_point(data = ts_deltoid, aes(x = ctq_score, y = session_1), color = "black", alpha = 0.6) +  # Observed points
+  geom_line(size = 1.2) +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high), fill = "purple", alpha = 0.2, show.legend = FALSE) +
+  labs(title = "a)",
+       x = "CTQ-SF total score",
+       y = "Temporal summation (SPARS)") +
+  theme_bw() +
+  theme(axis.title.x = element_text(size = 14),
+        axis.title.y = element_text(size = 14))
+
+
+#Plot predicted values with the interaction term sex
+pred <- ggpredict(ts_delt_adj, terms = c("ctq_score", "sex"))
+
+ts2 <- ggplot(pred, aes(x = x,
+                 y = predicted,
+                 color = as.factor(group))) +
+  geom_line(size = 1.2) +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high, fill = as.factor(group)), alpha = 0.2, colour = NA) +
+ scale_color_manual(values = c("2" = "red", "1" = "blue"),  # Map colors to the numbers
+                     labels = c("1" = "Males", "2" = "Females")) +  # Correctly map numbers to text labels
+  scale_fill_manual(values = c("2" = "red", "1" = "blue"),
+                    labels = c("1" = "Males", "2" = "Females")) +  # Same here for fill
+       geom_point(data = ts_deltoid, aes(x = ctq_score, y = session_1, color = as.factor(sex)), alpha = 0.6) +  # Observed points
+   labs(title = "b)",
+    x = "CTQ-SF total score",
+       y = NULL,
+       colour = "Sex",
+       fill = "Sex") +
+  theme_bw() +
+theme(aspect.ratio = 1) +
+   theme(axis.title.x = element_text(size = 12))
+
+         ts_plots <- ts_no_interaction / ts2 +
+           plot_annotation(caption = "CTQ-SF total score") &
+           theme(axis.title.x = element_blank(),
+                 plot.caption = element_text(hjust = 0.5, size = 14, margin = margin(t=5)))
+
+ggsave("ts_plots.png", plot = ts_plots, width = 10, height = 10, dpi = 300) # dpi = 300 for high resolution
+
+
+tab_ts_lx <- sjPlot::tab_model(ts_lx, ts_lx_sex, ts_lx_adj,
+                                       dv.labels = c("Unadjusted model of main effect","Unadjusted model with sex interaction term", "Adjusted model with sex interaction term"),
+                                       pred.labels = c("Intercept", "CTQ-SF score", "Sex (female)", "CTQ-SF score x sex (female)", "Age", "PSS score", "PSQI score", "Diagnosis of major depressive disorder", "Recent COVID-19", "Recent acute illness", "Diagnosis of chronic illness"))
+                              
+print(tab_ts_lx)
+                              
+tab_ts_delt <- sjPlot::tab_model(ts_delt, ts_delt_sex, ts_delt_adj,
+                                       dv.labels = c("Unadjusted model of main effect","Unadjusted model with sex interaction term", "Adjusted model with sex interaction term"),
+                                       pred.labels = c("Intercept", "CTQ-SF score", "Sex (female)", "CTQ-SF score x sex (female)", "Age", "PSS score", "PSQI score", "Diagnosis of major depressive disorder", "Recent COVID-19", "Recent acute illness", "Diagnosis of chronic illness"))
+                              print(tab_ts_delt)
+```
+
+
+# Predictor: PSS
+## Surface area
+```{r sa_pss}
+
+#Plot relationship between CTQ score and area of SH 
+p1 <- ggplot(data = sa,
+       aes(x = pss_total_correct,
+           y = area)) +
+  geom_point(position = position_jitter(width = 0.3), alpha = 0.5) +
+  geom_smooth(method = "lm",  fill= "purple", color = "black") +
+  labs(
+       x = "Total score on the PSS",
+    y = expression("Surface area of secondary hyperalgesia (cm"^2*")")) +  # Superscript for cm^2
+  theme_bw() +
+theme(aspect.ratio = 1) +
+   theme(axis.title.x = element_text(size = 14),
+        axis.title.y = element_text(size = 14))
+
+p2 <- ggplot(data = sa,
+       aes(x = pss_total_correct,
+           y = area,
+           colour = factor(sex))) +
+  geom_point(position = position_jitter(width = 0.3), alpha = 0.5) +
+  geom_smooth(method = "lm", aes(fill = factor(sex)),
+              alpha = 0.3, se = TRUE) +  # Fill the CI with color matching 'sex'+
+  scale_colour_manual(values = c("1" = "blue", "2" = "red"), 
+                      labels = c("1" = "Male", "2" = "Female")) +  # Set labels for sex
+  scale_fill_manual(values = c("1" = "blue", "2" = "red"), 
+                    labels = c("1" = "Male", "2" = "Female")) +
+  labs(
+       x = "Perceived Stress Scale",
+       y = expression("Surface area of secondary hyperalgesia (cm"^2*")"),   # Superscript for cm^2
+       colour = "Sex",  # Change the legend title to "Sex"
+       fill = "Sex") +  # Ensure fill legend title is also "Sex"
+theme_bw() +
+theme(aspect.ratio = 1)    +
+   theme(axis.title.x = element_text(size = 14),
+        axis.title.y = element_text(size = 14))
+
+p1 +p2 
+
+#Unadjusted model of main effect of PSS on area
+pss_area <- rlmer(area ~ pss_total_correct + (1|study_id), data = sa)
+model_parameters(pss_area) #No main effect of PSS on area 
+
+# # Model assumptions and checks
+#Linearity: Plot residuals vs. fitted values
+plot(fitted(pss_area), resid(pss_area), main = "Residuals vs Fitted")
+abline(h = 0, col = "red")
+
+# 2. Normality of Residuals: Q-Q plot
+qqnorm(resid(pss_area))
+qqline(resid(pss_area), col = "red")
+ 
+# 3. Homoscedasticity: Scale-Location plot
+plot(fitted(pss_area), sqrt(abs(resid(pss_area))), main = "Scale-Location")
+abline(h = 0, col = "red")
+
+#Unadjusted model with sex as interaction term
+pss_area_sex <- rlmer(area ~ pss_total_correct*sex + (1|study_id), data = sa)
+plot(pss_area_sex)
+model_parameters(pss_area_sex) # No interaction of sex 
+
+#Adjusted
+pss_area_adj <- rlmer(area ~ pss_total_correct*sex + current_age + mean_hfs_rating + hfs_intensity_correct + ctq_score + psqi_global_score + mdd_diagnosis + covid_in_prev_months + other_illness + chronic_illness_excl_mdd +(1|study_id), data = sa)
+
+#Plot predicted values with the interaction term sex
+pred <- ggpredict(pss_area_adj, terms = c("pss_total_correct", "sex"))
+
+
+sa2 <- ggplot(pred, aes(x = x,
+                 y = predicted,
+                 color = as.factor(group))) +
+  geom_line(size = 1.2) +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high, fill = as.factor(group)), alpha = 0.2, colour = NA) +
+ scale_color_manual(values = c("2" = "red", "1" = "blue"),  # Map colors to the numbers
+                     labels = c("1" = "Males", "2" = "Females")) +  # Correctly map numbers to text labels
+  scale_fill_manual(values = c("2" = "red", "1" = "blue"),
+                    labels = c("1" = "Males", "2" = "Females")) +  # Same here for fill
+       geom_point(data = sa, aes(x = pss_total_correct, y = area, color = as.factor(sex)), alpha = 0.6) +  # Observed points
+   labs(title = "b)",
+    x = "PSS score",
+       y = NULL,
+       colour = "Sex",
+       fill = "Sex") +
+  theme_bw() +
+theme(aspect.ratio = 1) +
+   theme(axis.title.x = element_text(size = 12))
+
+         sa_plots <- sa2_no_interaction + sa2 +
+           plot_annotation(caption = "Perceived Stress Scale") &
+           theme(axis.title.x = element_blank(),
+                 plot.caption = element_text(hjust = 0.5, size = 14, margin = margin(t=5)))
+
+ggsave("sa_plots.png", plot = sa_plots, width = 10, height = 10, dpi = 300) # dpi = 300 for high resolution
+
+
+table_sa <- sjPlot::tab_model(pss_area, pss_area_sex, pss_area_adj,
+                                       dv.labels = c("Unadjusted model of main effect","Unadjusted model with sex interaction term", "Adjusted model with sex interaction term"),
+                                       pred.labels = c("Intercept", "PSS score", "Sex (female)", "PSS score x sex (female)", "Age", "Mean SPARS rating for HFS", "HFS current intensity", "CTQ-SF score", "PSQI score", "Diagnosis of major depressive disorder", "Recent COVID-19", "Recent acute illness", "Diagnosis of chronic illness"))
+                              print(table_sa)
+                              
+
+
+```
+
+## Magnitude
+```{r pss_mag}
+
+p1 <- ggplot(data = mag,
+       aes(x = pss_total,
+           y = magnitude)) +
+  geom_point(position = position_jitter(width = 0.3), alpha = 0.5) +
+  geom_smooth(method = "lm",  fill= "purple", color = "black") +
+  labs(
+       x = "Total score on the PSS",
+       y = "Magnitude of secondary hyperalgesia (SPARS)") +
+  theme_bw() +
+theme(aspect.ratio = 1) +
+   theme(axis.title.x = element_text(size = 14),
+        axis.title.y = element_text(size = 14))
+
+p2 <- ggplot(data = mag,
+       aes(x = pss_total,
+           y = magnitude,
+           colour = factor(sex))) +
+geom_point(position = position_jitter(width = 0.3), alpha = 0.5) +
+  geom_smooth(method = "lm", aes(fill = factor(sex)),
+              alpha = 0.3, se = TRUE) +  
+  scale_colour_manual(values = c("1" = "blue", "2" = "red"), 
+                      labels = c("1" = "Male", "2" = "Female")) +  # Set labels for sex
+  scale_fill_manual(values = c("1" = "blue", "2" = "red"), 
+                    labels = c("1" = "Male", "2" = "Female")) +
+  labs(
+       x = "Total score on the PSS",
+       y = "Magnitude of secondary hyperalgesia (SPARS)",
+              colour = "Sex",  # Change the legend title to "Sex"
+       fill = "Sex") +  # Ensure fill legend title is also "Sex"
+theme_bw() +
+theme(aspect.ratio = 1)    +
+   theme(axis.title.x = element_text(size = 14),
+        axis.title.y = element_text(size = 14))
+
+p1 +p2 
+
+# Unadjusted model of main effect of PSS on magntidue 
+pss_mag <- rlmer(magnitude ~ pss_total_correct + (1|study_id/modality), data = mag)
+
+# # Model assumptions and checks
+#Linearity: Plot residuals vs. fitted values
+plot(fitted(pss_mag), resid(pss_mag), main = "Residuals vs Fitted")
+abline(h = 0, col = "red")
+
+# 2. Normality of Residuals: Q-Q plot
+qqnorm(resid(pss_mag))
+qqline(resid(pss_mag), col = "red")
+ 
+par(mfrow = c(2, 2))
+
+# 3. Homoscedasticity: Scale-Location plot
+plot(fitted(pss_mag), sqrt(abs(resid(pss_mag))), main = "Scale-Location")
+abline(h = 0, col = "red")
+
+plot(pss_mag)
+model_parameters(pss_mag) #No main effect of PSS on magnitude
+
+pss_mag_sex <- rlmer(magnitude ~ pss_total_correct*sex +(1|study_id/modality), data = mag)
+plot(pss_mag_sex)
+model_parameters(pss_mag_sex) #No interaction from sex
+
+pss_mag_adj <- rlmer(magnitude ~ pss_total_correct*sex + current_age + mean_hfs_rating + hfs_intensity_correct + ctq_score + psqi_global_score + mdd_diagnosis + covid_in_prev_months + other_illness + chronic_illness_excl_mdd +(1|study_id/modality),  data = mag)
+
+plot(model_mag_all_adj)
+model_parameters(pss_mag_adj) # No linear relationship between PSS and magnitude 
+
+table_sa <- sjPlot::tab_model(pss_mag, pss_mag_sex, pss_mag_adj,
+                                       dv.labels = c("Unadjusted model of main effect","Unadjusted model with sex interaction term", "Adjusted model with sex interaction term"),
+                                       pred.labels = c("Intercept", "PSS score", "Sex (female)", "PSS score x sex (female)", "Age", "Mean SPARS rating for HFS", "HFS current intensity", "CTQ-SF score", "PSQI score", "Diagnosis of major depressive disorder", "Recent COVID-19", "Recent acute illness", "Diagnosis of chronic illness"))
+                              print(table_sa)
+
+ 
+pss_mag_adj_no_sex <- rlmer(magnitude ~ pss_total_correct + current_age + mean_hfs_rating + hfs_intensity_correct + ctq_score + psqi_global_score + mdd_diagnosis + covid_in_prev_months + other_illness + chronic_illness_excl_mdd +(1|study_id/modality),  data = mag)
+
+plot_no_int <- ggpredict(model_mag_adj_no_sex, terms = "pss_total_correct")
+
+mag_no_interaction <- ggplot(plot_no_int, aes(x = x,
+                 y = predicted)) +
+  # Add geom_point for observed data
+  geom_point(data = mag, aes(x = pss_total_correct, y = magnitude), color = "black", alpha = 0.6) +  # Observed points
+  geom_line(size = 1.2) +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high), fill = "purple", alpha = 0.2, show.legend = FALSE) +
+  labs(title = "a)",
+       x = "PSS score",
+       y = "Magnitude of secondary hyperalgesia") +
+  theme_bw() +
+  theme(axis.title.x = element_text(size = 14),
+        axis.title.y = element_text(size = 14))
+
+
+#Plot predicted values with the interaction term sex
+pred <- ggpredict(pss_mag_adj, terms = c("pss_total_correct", "sex"))
+
+mag2 <- ggplot(pred, aes(x = x,
+                 y = predicted,
+                 color = as.factor(group))) +
+  geom_line(size = 1.2) +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high, fill = as.factor(group)), alpha = 0.2, colour = NA) +
+ scale_color_manual(values = c("2" = "red", "1" = "blue"),  # Map colors to the numbers
+                     labels = c("1" = "Males", "2" = "Females")) +  # Correctly map numbers to text labels
+  scale_fill_manual(values = c("2" = "red", "1" = "blue"),
+                    labels = c("1" = "Males", "2" = "Females")) +  # Same here for fill
+       geom_point(data = mag, aes(x = pss_total_correct, y = magnitude, color = as.factor(sex)), alpha = 0.6) +  # Observed points
+   labs(title = "b)",
+    x = "PSS score",
+       y = NULL,
+       colour = "Sex",
+       fill = "Sex") +
+  theme_bw() +
+theme(aspect.ratio = 1) +
+   theme(axis.title.x = element_text(size = 12))
+
+         mag_plots <- mag_no_interaction + mag2 +
+           plot_annotation(caption = "PSS score") &
+           theme(axis.title.x = element_blank(),
+                 plot.caption = element_text(hjust = 0.5, size = 14, margin = margin(t=5)))
+
+ggsave("mag_plots.png", plot = mag_plots, width = 10, height = 10, dpi = 300) # dpi = 300 for high resolution
+
+mag_plots <- mag1 +mag2
+
+ggsave("mag_plots.png", plot = mag_plots, width = 10, height = 10, dpi = 300) # dpi = 300 for high resolution
+                             
+```
+
+
+
+## CPM
+```{r cpm_pss}
+#Plot relationship between CTQ score and CPM 
+
+ p1 <- ggplot(data = cpm,
+       aes(x = pss_total,
+           y = session_1)) +
+geom_point(position = position_jitter(width = 0.3), alpha = 0.5) +
+  geom_smooth(method = "lm",  fill= "purple", color = "black") +
+  facet_wrap(~site, labeller = as_labeller(c("lumbar" = "Lumbar test site", "deltoid" = "Deltoid test site"))) +
+  labs(
+       x = "Total score on the PSS",
+       y = "Conditioned pain modulation (N)") +
+  theme_bw() +
+theme(aspect.ratio = 1) +
+   theme(axis.title.x = element_text(size = 14),
+        axis.title.y = element_text(size = 14))
+
+p2 <- ggplot(data = cpm,
+       aes(x = pss_total,
+           y = session_1,
+           colour = factor(sex))) +
+  facet_wrap(~site, labeller = as_labeller(c("lumbar" = "Lumbar test site", "deltoid" = "Deltoid test site"))) +
+  geom_point(position = position_jitter(width = 0.3), alpha = 0.5) +
+  geom_smooth(method = "lm", aes(fill = factor(sex)),
+              alpha = 0.3, se = TRUE) +  
+  scale_colour_manual(values = c("1" = "blue", "2" = "red"), 
+                      labels = c("1" = "Male", "2" = "Female")) +  # Set labels for sex
+  scale_fill_manual(values = c("1" = "blue", "2" = "red"), 
+                    labels = c("1" = "Male", "2" = "Female")) +
+  labs(
+       x = "Total score on the PSS",
+       y = "Conditioned pain modulation (N)",
+              colour = "Sex",  # Change the legend title to "Sex"
+       fill = "Sex") +  # Ensure fill legend title is also "Sex"
+theme_bw() +
+theme(aspect.ratio = 1)    +
+   theme(axis.title.x = element_text(size = 14),
+        axis.title.y = element_text(size = 14))
+
+p1 + p2
+
+# unadjusted model of main effect of PSS on CPM
+cpm_lx <- lm(session_1 ~ pss_total_correct, data = cpm_lumbar)
+
+plot(cpm_lx)
+model_parameters(cpm_lx) #No main effect at lumbar 
+
+cpm_delt <- lm(session_1 ~ pss_total_correct, data = cpm_deltoid)
+
+plot(cpm_delt)
+model_parameters(cpm_delt) #No main effect at deltoid 
+
+# unadjusted model with sex interaction term
+cpm_sex_lx <- lm(session_1 ~ pss_total_correct*sex, data = cpm_lumbar)
+
+plot(cpm_sex_lx)
+model_parameters(cpm_sex_lx) #No interaction at lumbar 
+
+cpm_sex_delt <- lm(session_1 ~ pss_total_correct*sex, data = cpm_deltoid)
+
+plot(cpm_sex_delt)
+model_parameters(cpm_sex_delt) #No interaction at deltoid 
+
+# Adjusted
+cpm_lx_adj <-lm(session_1 ~ pss_total_correct*sex + current_age + ctq_score + psqi_global_score + mdd_diagnosis + covid_in_prev_months + other_illness + chronic_illness_excl_mdd, data = cpm_lumbar)
+
+cpm_lx_adj_no_int <-lm(session_1 ~ pss_total_correct + current_age + ctq_score + psqi_global_score + mdd_diagnosis + covid_in_prev_months + other_illness + chronic_illness_excl_mdd, data = cpm_lumbar)
+
+plot(cpm_lx_adj)
+model_parameters(cpm_lx_adj) #No effect at lumbar
+
+cpm_delt_adj <-lm(session_1 ~ pss_total_correct*sex + current_age + ctq_score + psqi_global_score + mdd_diagnosis + covid_in_prev_months + other_illness + chronic_illness_excl_mdd, data = cpm_deltoid)
+
+cpm_delt_adj_no_int <-lm(session_1 ~ pss_total_correct + current_age + ctq_score + psqi_global_score + mdd_diagnosis + covid_in_prev_months + other_illness + chronic_illness_excl_mdd, data = cpm_deltoid)
+
+plot(cpm_delt_adj)
+model_parameters(cpm_delt_adj)
+
+tab_cpm_lx <- sjPlot::tab_model(cpm_lx, cpm_sex_lx, cpm_lx_adj,
+                                       dv.labels = c("Unadjusted model of main effect","Unadjusted model with sex interaction term", "Adjusted model with sex interaction term"),
+                                       pred.labels = c("Intercept", "PSS score", "Sex (female)", "PSS score x sex (female)", "Age", "CTQ-SF score", "PSQI score", "Diagnosis of major depressive disorder", "Recent COVID-19", "Recent acute illness", "Diagnosis of chronic illness"))
+                              print(tab_cpm_lx)
+                              
+tab_cpm_delt <- sjPlot::tab_model(cpm_delt, cpm_sex_delt, cpm_delt_adj,
+                                       dv.labels = c("Unadjusted model of main effect","Unadjusted model with sex interaction term", "Adjusted model with sex interaction term"),
+                                       pred.labels = c("Intercept", "PSS score", "Sex (female)", "PSS score x sex (female)", "Age", "CTQ-SF score", "PSQI score", "Diagnosis of major depressive disorder", "Recent COVID-19", "Recent acute illness", "Diagnosis of chronic illness"))
+                              print(tab_cpm_delt)
+
+plot_no_int_cpm <- ggpredict(cpm_delt_adj_no_int, terms = "ctq_score")
+
+cpm_no_interaction <- ggplot(plot_no_int_cpm, aes(x = x,
+                 y = predicted)) +
+  # Add geom_point for observed data
+  geom_point(data = cpm_deltoid, aes(x = pss_total_correct, y = session_1), color = "black", alpha = 0.6) +  # Observed points
+  geom_line(size = 1.2) +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high), fill = "purple", alpha = 0.2, show.legend = FALSE) +
+  labs(title = "a)",
+       x = "CTQ-SF total score",
+       y = "Conditioned pain modulation (N)") +
+  theme_bw() +
+  theme(axis.title.x = element_text(size = 14),
+        axis.title.y = element_text(size = 14))
+
+
+#Plot predicted values with the interaction term sex
+pred <- ggpredict(cpm_delt_adj, terms = c("pss_total_correct", "sex"))
+
+cpm2 <- ggplot(pred, aes(x = x,
+                 y = predicted,
+                 color = as.factor(group))) +
+  geom_line(size = 1.2) +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high, fill = as.factor(group)), alpha = 0.2, colour = NA) +
+ scale_color_manual(values = c("2" = "red", "1" = "blue"),  # Map colors to the numbers
+                     labels = c("1" = "Males", "2" = "Females")) +  # Correctly map numbers to text labels
+  scale_fill_manual(values = c("2" = "red", "1" = "blue"),
+                    labels = c("1" = "Males", "2" = "Females")) +  # Same here for fill
+       geom_point(data = cpm_deltoid, aes(x = pss_total_correct, y = session_1, color = as.factor(sex)), alpha = 0.6) +  # Observed points
+   labs(title = "b)",
+    x = "PSS score",
+       y = NULL,
+       colour = "Sex",
+       fill = "Sex") +
+  theme_bw() +
+theme(aspect.ratio = 1) +
+   theme(axis.title.x = element_text(size = 12))
+
+         cpm_plots <- cpm_no_interaction / cpm2 +
+           plot_annotation(caption = "PSS score") &
+           theme(axis.title.x = element_blank(),
+                 plot.caption = element_text(hjust = 0.5, size = 14, margin = margin(t=5)))
+```
+
+## TS
+```{r ts_pss}
+
+p1 <- ggplot(data = ts,
+       aes(x = pss_total,
+           y = session_1)) +
+geom_point(position = position_jitter(width = 0.3), alpha = 0.5) +
+  geom_smooth(method = "lm",  fill= "purple", color = "black") +
+  facet_wrap(~site, labeller = as_labeller(c("lumbar" = "Lumbar test site", "deltoid" = "Deltoid test site"))) +
+  labs(
+       x = "Total score on the PSS",
+       y = "Temporal summation (SPARS)") +
+  theme_bw() +
+theme(aspect.ratio = 1) +
+   theme(axis.title.x = element_text(size = 14),
+        axis.title.y = element_text(size = 14))
+
+p2 <- ggplot(data = ts,
+       aes(x = pss_total,
+           y = session_1,
+           colour = factor(sex))) +
+facet_wrap(~site, labeller = as_labeller(c("lumbar" = "Lumbar test site", "deltoid" = "Deltoid test site"))) +
+  geom_point(position = position_jitter(width = 0.3), alpha = 0.5) +
+  geom_smooth(method = "lm", aes(fill = factor(sex)),
+              alpha = 0.3, se = TRUE) +  
+  scale_colour_manual(values = c("1" = "blue", "2" = "red"), 
+                      labels = c("1" = "Male", "2" = "Female")) +  # Set labels for sex
+  scale_fill_manual(values = c("1" = "blue", "2" = "red"), 
+                    labels = c("1" = "Male", "2" = "Female")) +
+  labs(
+       x = "Total score on the PSS",
+       y = "Temporal summation (SPARS)",
+              colour = "Sex",  # Change the legend title to "Sex"
+       fill = "Sex") +  # Ensure fill legend title is also "Sex"
+theme_bw() +
+theme(aspect.ratio = 1) +
+   theme(axis.title.x = element_text(size = 14),
+        axis.title.y = element_text(size = 14))
+
+p1 +p2
+
+# unadjusted model of main effect of PSS on TS
+ts_lx <- lm(session_1 ~ pss_total_correct, data = ts_lumbar)
+
+# Set plotting area to 2 rows and 2 columns
+par(mfrow = c(2, 2))
+
+# Plot diagnostic plots
+plot(ts_lx)
+
+# Reset plotting area to default (optional but good practice)
+par(mfrow = c(1, 1))
+plot(ts_lx)
+model_parameters(ts_lx) #No main effect at lumbar
+
+ts_delt <- lm(session_1 ~ pss_total_correct, data = ts_deltoid)
+
+# Set plotting area to 2 rows and 2 columns
+par(mfrow = c(2, 2))
+
+# Plot diagnostic plots
+plot(ts_delt)
+
+# Reset plotting area to default (optional but good practice)
+par(mfrow = c(1, 1))
+plot(ts_delt)
+model_parameters(ts_delt) #MAIN EFFECT OF PSS ON TS AT DELTOID
+
+# unadjusted model with sex as interaction term
+ts_sex_lx <- lm(session_1 ~ pss_total_correct*sex, data = ts_lumbar)
+plot(ts_sex_lx)
+model_parameters(ts_sex_lx) #No interaction at lumbar
+
+ts_sex_delt <- lm(session_1 ~ pss_total_correct*sex, data = ts_deltoid)
+plot(ts_sex_delt)
+model_parameters(ts_sex_delt) #No interaction at deltoid
+
+# Adjusted
+ts_lx_adj <-lm(session_1 ~ pss_total_correct*sex + current_age + ctq_score + psqi_global_score + mdd_diagnosis + covid_in_prev_months + other_illness + chronic_illness_excl_mdd, data = ts_lumbar)
+
+ts_lx_adj_no_int <-lm(session_1 ~ pss_total_correct + current_age + ctq_score + psqi_global_score + mdd_diagnosis + covid_in_prev_months + other_illness + chronic_illness_excl_mdd, data = ts_lumbar)
+
+
+plot(ts_lx_adj)
+model_parameters(ts_lx_adj) #No main effect
+
+ts_delt_adj <-lm(session_1 ~ pss_total_correct*sex + current_age + ctq_score + psqi_global_score + mdd_diagnosis + covid_in_prev_months + other_illness + chronic_illness_excl_mdd, data = ts_deltoid)
+
+ts_delt_adj_no_int <-lm(session_1 ~ pss_total_correct + current_age + ctq_score + psqi_global_score + mdd_diagnosis + covid_in_prev_months + other_illness + chronic_illness_excl_mdd, data = ts_deltoid)
+
+
+plot(ts_delt_adj)
+model_parameters(ts_delt_adj) #No main effect 
+
+#lumbar site
+plot_no_int <- ggpredict(ts_lx_adj_no_int, terms = "pss_total_correct")
+
+ts_no_interaction <- ggplot(plot_no_int, aes(x = x,
+                 y = predicted)) +
+  # Add geom_point for observed data
+  geom_point(data = ts_lumbar, aes(x = pss_total_correct, y = session_1), color = "black", alpha = 0.6) +  # Observed points
+  geom_line(linewidth = 1.2) +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high), fill = "purple", alpha = 0.2, show.legend = FALSE) +
+  labs(title = "a)",
+       x = "PSS",
+       y = "Temporal summation (SPARS)") +
+  theme_bw() +
+  theme(axis.title.x = element_text(size = 14),
+        axis.title.y = element_text(size = 14))
+
+
+#Plot predicted values with the interaction term sex
+pred <- ggpredict(ts_lx_adj, terms = c("pss_total_correct", "sex"))
+
+ts2 <- ggplot(pred, aes(x = x,
+                 y = predicted,
+                 color = as.factor(group))) +
+  geom_line(size = 1.2) +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high, fill = as.factor(group)), alpha = 0.2, colour = NA) +
+ scale_color_manual(values = c("2" = "red", "1" = "blue"),  # Map colors to the numbers
+                     labels = c("1" = "Males", "2" = "Females")) +  # Correctly map numbers to text labels
+  scale_fill_manual(values = c("2" = "red", "1" = "blue"),
+                    labels = c("1" = "Males", "2" = "Females")) +  # Same here for fill
+       geom_point(data = ts_lumbar, aes(x = pss_total_correct, y = session_1, color = as.factor(sex)), alpha = 0.6) +  # Observed points
+   labs(title = "b)",
+    x = "PSS",
+       y = NULL,
+       colour = "Sex",
+       fill = "Sex") +
+  theme_bw() +
+theme(aspect.ratio = 1) +
+   theme(axis.title.x = element_text(size = 12))
+
+         ts_plots <- ts_no_interaction / ts2 +
+           plot_annotation(caption = "Perceived Stress Scale") &
+           theme(axis.title.x = element_blank(),
+                 plot.caption = element_text(hjust = 0.5, size = 14, margin = margin(t=5)))
+
+ggsave("ts_plots.png", plot = ts_plots, width = 10, height = 10, dpi = 300) # dpi = 300 for high resolution
+
+
+#deltoid site
+plot_no_int <- ggpredict(ts_delt_adj_no_int, terms = "pss_total_correct")
+
+ts_no_interaction <- ggplot(plot_no_int, aes(x = x,
+                 y = predicted)) +
+  # Add geom_point for observed data
+  geom_point(data = ts_deltoid, aes(x = pss_total_correct, y = session_1), color = "black", alpha = 0.6) +  # Observed points
+  geom_line(size = 1.2) +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high), fill = "purple", alpha = 0.2, show.legend = FALSE) +
+  labs(title = "a)",
+       x = "PSS score",
+       y = "Temporal summation (SPARS)") +
+  theme_bw() +
+  theme(axis.title.x = element_text(size = 14),
+        axis.title.y = element_text(size = 14))
+
+
+#Plot predicted values with the interaction term sex
+pred <- ggpredict(ts_delt_adj, terms = c("pss_total_correct", "sex"))
+
+ts2 <- ggplot(pred, aes(x = x,
+                 y = predicted,
+                 color = as.factor(group))) +
+  geom_line(size = 1.2) +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high, fill = as.factor(group)), alpha = 0.2, colour = NA) +
+ scale_color_manual(values = c("2" = "red", "1" = "blue"),  # Map colors to the numbers
+                     labels = c("1" = "Males", "2" = "Females")) +  # Correctly map numbers to text labels
+  scale_fill_manual(values = c("2" = "red", "1" = "blue"),
+                    labels = c("1" = "Males", "2" = "Females")) +  # Same here for fill
+       geom_point(data = ts_deltoid, aes(x = pss_total_correct, y = session_1, color = as.factor(sex)), alpha = 0.6) +  # Observed points
+   labs(title = "b)",
+    x = "PSS",
+       y = NULL,
+       colour = "Sex",
+       fill = "Sex") +
+  theme_bw() +
+theme(aspect.ratio = 1) +
+   theme(axis.title.x = element_text(size = 12))
+
+         ts_plots_delt <- ts_no_interaction / ts2 +
+           plot_annotation(caption = "Perceived Stress Scale") &
+           theme(axis.title.x = element_blank(),
+                 plot.caption = element_text(hjust = 0.5, size = 14, margin = margin(t=5)))
+
+ggsave("ts_plots_delt.png", plot = ts_plots_delt, width = 10, height = 10, dpi = 300) # dpi = 300 for high resolution
+
+tab_ts_lx <- sjPlot::tab_model(ts_lx, ts_sex_lx, ts_lx_adj,
+                                       dv.labels = c("Unadjusted model of main effect","Unadjusted model with sex interaction term", "Adjusted model with sex interaction term"),
+                                       pred.labels = c("Intercept", "PSS score", "Sex (female)", "PSS score x sex (female)", "Age", "CTQ-SF score", "PSQI score", "Diagnosis of major depressive disorder", "Recent COVID-19", "Recent acute illness", "Diagnosis of chronic illness"))
+                              
+print(tab_ts_lx)
+                              
+tab_ts_delt <- sjPlot::tab_model(ts_delt, ts_sex_delt, ts_delt_adj,
+                                       dv.labels = c("Unadjusted model of main effect","Unadjusted model with sex interaction term", "Adjusted model with sex interaction term"),
+                                       pred.labels = c("Intercept", "PSS score", "Sex (female)", "PSS score x sex (female)", "Age", "CTQ-SF score", "PSQI score", "Diagnosis of major depressive disorder", "Recent COVID-19", "Recent acute illness", "Diagnosis of chronic illness"))
+                              print(tab_ts_delt)
+```
+
+
+# Predictor: Composite score CTQ and PSS
+```{r composite}
+
+#To calculate a composite score of CTQ (childhood adversity) and PSS (recent stress), we need to calculate the mean of each questionnaire, take each participant's score and subtract the mean and divide by SD 
+
+foo <- sa %>%
+  mutate(ctq_mean = mean(sa$ctq_score),
+         pss_mean = mean(sa$pss_total_correct),
+         ctq_sd = sd(sa$ctq_score),
+         pss_sd = sd(sa$pss_total_correct),
+         ctq_comp_score = ((ctq_mean - ctq_score)/ctq_sd),
+         pss_comp_score = ((pss_mean - pss_total_correct)/pss_sd),
+         comp_score = (ctq_comp_score + pss_comp_score)/2) %>%
+  dplyr::select(study_id,
+                comp_score) %>%
+  unique()
+
+summary(foo$comp_score)
+
+ggplot(foo,
+       aes(comp_score)) +
+  geom_bar() +
+  scale_x_binned()
+
+
+foo_sum <- tableby(sex ~ comp_score, data = foo, numeric.stats =c("median", "q1q3", "range"))
+summary(foo_sum, pfootnote=TRUE, text = TRUE)
+
+```
+
+## Surface area
+```{r sa_comp}
+
+sa <- merge(sa, foo, by = "study_id")
+
+#Plot relationship between CTQ score and area of SH 
+ p1 <- ggplot(data = sa,
+       aes(x = comp_score,
+           y = area)) +
+  geom_point(position = position_jitter(width = 0.3), alpha = 0.5) +
+  geom_smooth(method = "lm",  fill= "purple", color = "black") +
+  labs(
+       x = "Estimated stressful life events score",
+    y = expression("Surface area of secondary hyperalgesia (cm"^2*")")) +  # Superscript for cm^2
+  theme_bw() +
+theme(aspect.ratio = 1) +
+   theme(axis.title.x = element_text(size = 14),
+        axis.title.y = element_text(size = 14))
+ 
+ p2 <- ggplot(data = sa,
+       aes(x = comp_score,
+           y = area,
+           colour = factor(sex))) +
+  geom_point(position = position_jitter(width = 0.3), alpha = 0.5) +
+  geom_smooth(method = "lm", aes(fill = factor(sex)),
+              alpha = 0.3, se = TRUE) +  # Fill the CI with color matching 'sex'+
+  scale_colour_manual(values = c("1" = "blue", "2" = "red"), 
+                      labels = c("1" = "Male", "2" = "Female")) +  # Set labels for sex
+  scale_fill_manual(values = c("1" = "blue", "2" = "red"), 
+                    labels = c("1" = "Male", "2" = "Female")) +
+  labs(
+       x = "Estimated stressful life events score",
+       y = expression("Surface area of secondary hyperalgesia (cm"^2*")"),   # Superscript for cm^2
+       colour = "Sex",  # Change the legend title to "Sex"
+       fill = "Sex") +  # Ensure fill legend title is also "Sex"
+theme_bw() +
+theme(aspect.ratio = 1)    +
+   theme(axis.title.x = element_text(size = 14),
+        axis.title.y = element_text(size = 14))
+
+p1 +p2
+ #unadjusted model of main effect of comp_score on area
+comp_score_area <- rlmer(area ~ comp_score + (1|study_id), data = sa)
+
+# # Model assumptions and checks
+#Linearity: Plot residuals vs. fitted values
+plot(fitted(comp_score_area), resid(comp_score_area), main = "Residuals vs Fitted")
+abline(h = 0, col = "red")
+
+# 2. Normality of Residuals: Q-Q plot
+qqnorm(resid(comp_score_area))
+qqline(resid(comp_score_area), col = "red")
+ 
+par(mfrow = c(2, 2))
+
+# 3. Homoscedasticity: Scale-Location plot
+plot(fitted(pss_mag), sqrt(abs(resid(pss_mag))), main = "Scale-Location")
+abline(h = 0, col = "red")
+
+plot(comp_score_area)
+model_parameters(comp_score_area) #No main effect 
+
+ # unadjusted model with sex as interaction term
+comp_score_area_sex <- rlmer(area ~ comp_score*sex + (1|study_id), data = sa)
+
+plot(comp_score_area_sex)
+model_parameters(comp_score_area_sex) #No interaction 
+
+#Adjusted
+comp_score_area_adj <- rlmer(area ~ comp_score*sex + current_age + mean_hfs_rating + hfs_intensity_correct + psqi_global_score + mdd_diagnosis + covid_in_prev_months + other_illness + chronic_illness_excl_mdd + (1|study_id), data = sa)
+
+comp_score_area_adj_no_int <- rlmer(area ~ comp_score + current_age + mean_hfs_rating + hfs_intensity_correct + psqi_global_score + mdd_diagnosis + covid_in_prev_months + other_illness + chronic_illness_excl_mdd + (1|study_id), data = sa)
+
+plot(comp_score_area_adj)
+model_parameters(comp_score_area_adj)
+
+table_sa <- sjPlot::tab_model(comp_score_area, comp_score_area_sex, comp_score_area_adj,
+                                       dv.labels = c("Unadjusted model of main effect","Unadjusted model with sex interaction term", "Adjusted model with sex interaction term"),
+                                       pred.labels = c("Intercept", "Stressful life events score", "Sex (female)", "Stressful life events score x sex (female)", "Age", "Mean SPARS rating for HFS", "HFS current intensity", "PSQI score", "Diagnosis of major depressive disorder", "Recent COVID-19", "Recent acute illness", "Diagnosis of chronic illness"))
+                              print(table_sa)
+                              
+plot_no_int <- ggpredict(comp_score_area_adj_no_int, terms = "comp_score")
+
+
+sa2_no_interaction <- ggplot(plot_no_int, aes(x = x,
+                 y = predicted)) +
+  # Add geom_point for observed data
+  geom_point(data = sa, aes(x = comp_score, y = area), color = "black", alpha = 0.6) +  # Observed points
+  geom_line(size = 1.2) +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high), fill = "purple", alpha = 0.2, show.legend = FALSE) +
+  labs(title = "a)",
+       x = "Estimated stressful life events score",
+       y = expression("Surface area of secondary hyperalgesia (cm"^2*")")) +
+  theme_bw() +
+  theme(axis.title.x = element_text(size = 14),
+        axis.title.y = element_text(size = 14))
+
+plot_model(comp_score_area_adj, type = "int", terms = "comp_score", "sex")
+
+#Plot predicted values with the interaction term sex
+pred <- ggpredict(comp_score_area_adj, terms = c("comp_score", "sex"))
+
+
+sa2 <- ggplot(pred, aes(x = x,
+                 y = predicted,
+                 color = as.factor(group))) +
+  geom_line(size = 1.2) +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high, fill = as.factor(group)), alpha = 0.2, colour = NA) +
+ scale_color_manual(values = c("2" = "red", "1" = "blue"),  # Map colors to the numbers
+                     labels = c("1" = "Males", "2" = "Females")) +  # Correctly map numbers to text labels
+  scale_fill_manual(values = c("2" = "red", "1" = "blue"),
+                    labels = c("1" = "Males", "2" = "Females")) +  # Same here for fill
+       geom_point(data = sa, aes(x = comp_score, y = area, color = as.factor(sex)), alpha = 0.6) +  # Observed points
+   labs(title = "b)",
+    x = "Estimated stressful life events score",
+       y = NULL,
+       colour = "Sex",
+       fill = "Sex") +
+  theme_bw() +
+theme(aspect.ratio = 1) +
+   theme(axis.title.x = element_text(size = 12))
+
+         sa_plots <- sa2_no_interaction + sa2 +
+           plot_annotation(caption = "Estimated stressful life events score") &
+           theme(axis.title.x = element_blank(),
+                 plot.caption = element_text(hjust = 0.5, size = 14, margin = margin(t=5)))
+
+```
+
+
+
+## Magnitude
+```{r mag_comp}
+
+mag <- merge(mag, foo, by = "study_id")
+
+p1 <-  ggplot(data = mag,
+       aes(x = comp_score,
+           y = magnitude)) +
+  geom_point(position = position_jitter(width = 0.3), alpha = 0.5) +
+  geom_smooth(method = "lm",  fill= "purple", color = "black") +
+  labs(
+       x = "Estimated stressful life events score",
+       y = "Magnitude of secondary hyperalgesia (SPARS)") +
+  theme_bw() +
+theme(aspect.ratio = 1) +
+   theme(axis.title.x = element_text(size = 14),
+        axis.title.y = element_text(size = 14))
+
+  p2 <- ggplot(data = mag,
+       aes(x = comp_score,
+           y = magnitude,
+           colour = factor(sex))) +
+geom_point(position = position_jitter(width = 0.3), alpha = 0.5) +
+  geom_smooth(method = "lm", aes(fill = factor(sex)),
+              alpha = 0.3, se = TRUE) +  
+  scale_colour_manual(values = c("1" = "blue", "2" = "red"), 
+                      labels = c("1" = "Male", "2" = "Female")) +  # Set labels for sex
+  scale_fill_manual(values = c("1" = "blue", "2" = "red"), 
+                    labels = c("1" = "Male", "2" = "Female")) +
+  labs(
+       x = "Estimated stressful life events score",
+       y = "Magnitude of secondary hyperalgesia (SPARS)",
+              colour = "Sex",  # Change the legend title to "Sex"
+       fill = "Sex") +  # Ensure fill legend title is also "Sex"
+theme_bw() +
+theme(aspect.ratio = 1)    +
+   theme(axis.title.x = element_text(size = 14),
+        axis.title.y = element_text(size = 14))
+
+p1 +p2
+  #unadjusted model of main effect of comp_score on magnitude
+comp_score_mag <- rlmer(magnitude ~ comp_score +(1|study_id/modality), data = mag)
+
+# # Model assumptions and checks
+#Linearity: Plot residuals vs. fitted values
+plot(fitted(comp_score_mag), resid(comp_score_mag), main = "Residuals vs Fitted")
+abline(h = 0, col = "red")
+
+# 2. Normality of Residuals: Q-Q plot
+qqnorm(resid(comp_score_mag))
+qqline(resid(comp_score_mag), col = "red")
+ 
+par(mfrow = c(2, 2))
+
+# 3. Homoscedasticity: Scale-Location plot
+plot(fitted(pss_mag), sqrt(abs(resid(pss_mag))), main = "Scale-Location")
+abline(h = 0, col = "red")
+plot(comp_score_mag)
+model_parameters(comp_score_mag) #No main effect
+
+#unadjusted model with sex as interaction term
+comp_score_mag_sex <- rlmer(magnitude ~ comp_score*sex +(1|study_id/modality), data = mag)
+plot(comp_score_mag_sex)
+model_parameters(comp_score_mag_sex) #No interaction
+
+#Ajusted model
+comp_score_mag_adj <- rlmer(magnitude ~ comp_score*sex + current_age + mean_hfs_rating + hfs_intensity + psqi_global_score + mdd_diagnosis + covid_in_prev_months + other_illness + chronic_illness_excl_mdd + (1|study_id/modality), data = mag)
+
+comp_score_mag_adj_no_int <- rlmer(magnitude ~ comp_score + current_age + mean_hfs_rating + hfs_intensity + psqi_global_score + mdd_diagnosis + covid_in_prev_months + other_illness + chronic_illness_excl_mdd + (1|study_id/modality), data = mag)
+
+plot(comp_score_mag_adj)
+model_parameters(comp_score_mag_adj) # no relationship
+
+table_sa <- sjPlot::tab_model(comp_score_mag, comp_score_mag_sex, comp_score_mag_adj,
+                                       dv.labels = c("Unadjusted model of main effect","Unadjusted model with sex interaction term", "Adjusted model with sex interaction term"),
+                                       pred.labels = c("Intercept", "Stressful life events score", "Sex (female)", "Stressful life events score x sex (female)", "Age", "Mean SPARS rating for HFS", "HFS current intensity", "PSQI score", "Diagnosis of major depressive disorder", "Recent COVID-19", "Recent acute illness", "Diagnosis of chronic illness"))
+                              print(table_sa)
+                              
+plot_no_int <- ggpredict(comp_score_mag_adj_no_int, terms = "comp_score")
+
+mag_no_interaction <- ggplot(plot_no_int, aes(x = x,
+                 y = predicted)) +
+  # Add geom_point for observed data
+  geom_point(data = mag, aes(x = comp_score, y = magnitude), color = "black", alpha = 0.6) +  # Observed points
+  geom_line(size = 1.2) +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high), fill = "purple", alpha = 0.2, show.legend = FALSE) +
+  labs(title = "a)",
+       x = "Estimated stressful life events score",
+       y = "Magnitude of secondary hyperalgesia") +
+  theme_bw() +
+  theme(axis.title.x = element_text(size = 14),
+        axis.title.y = element_text(size = 14))
+
+
+#Plot predicted values with the interaction term sex
+pred <- ggpredict(comp_score_mag_adj, terms = c("comp_score", "sex"))
+
+mag2 <- ggplot(pred, aes(x = x,
+                 y = predicted,
+                 color = as.factor(group))) +
+  geom_line(size = 1.2) +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high, fill = as.factor(group)), alpha = 0.2, colour = NA) +
+ scale_color_manual(values = c("2" = "red", "1" = "blue"),  # Map colors to the numbers
+                     labels = c("1" = "Males", "2" = "Females")) +  # Correctly map numbers to text labels
+  scale_fill_manual(values = c("2" = "red", "1" = "blue"),
+                    labels = c("1" = "Males", "2" = "Females")) +  # Same here for fill
+       geom_point(data = mag, aes(x = comp_score, y = magnitude, color = as.factor(sex)), alpha = 0.6) +  # Observed points
+   labs(title = "b)",
+    x = "CTQ-SF total score",
+       y = NULL,
+       colour = "Sex",
+       fill = "Sex") +
+  theme_bw() +
+theme(aspect.ratio = 1) +
+   theme(axis.title.x = element_text(size = 12))
+
+         mag_plots <- mag_no_interaction + mag2 +
+           plot_annotation(caption = "Estimated stressful life events score") &
+           theme(axis.title.x = element_blank(),
+                 plot.caption = element_text(hjust = 0.5, size = 14, margin = margin(t=5)))
+```
+
+
+## CPM
+```{r cpm_comp}
+#Plot relationship between CTQ score and CPM 
+
+cpm <- merge(cpm, foo, by ="study_id")
+cpm_lumbar <- merge(cpm_lumbar, foo, by ="study_id")
+cpm_deltoid <- merge(cpm_deltoid, foo, by ="study_id")
+
+p1 <-  ggplot(data = cpm,
+       aes(x = comp_score,
+           y = session_1)) +
+geom_point(position = position_jitter(width = 0.3), alpha = 0.5) +
+  geom_smooth(method = "lm",  fill= "purple", color = "black") +
+  facet_wrap(~site, labeller = as_labeller(c("lumbar" = "Lumbar test site", "deltoid" = "Deltoid test site"))) +
+  labs(
+       x = "Estimated stressful life events score",
+       y = "Conditioned pain modulation (N)") +
+  theme_bw() +
+theme(aspect.ratio = 1) +
+   theme(axis.title.x = element_text(size = 14),
+        axis.title.y = element_text(size = 14))
+ 
+ p2 <- ggplot(data = cpm,
+       aes(x = comp_score,
+           y = session_1,
+           colour = factor(sex))) +
+  facet_wrap(~site, labeller = as_labeller(c("lumbar" = "Lumbar test site", "deltoid" = "Deltoid test site"))) +
+  geom_point(position = position_jitter(width = 0.3), alpha = 0.5) +
+  geom_smooth(method = "lm", aes(fill = factor(sex)),
+              alpha = 0.3, se = TRUE) +  
+  scale_colour_manual(values = c("1" = "blue", "2" = "red"), 
+                      labels = c("1" = "Male", "2" = "Female")) +  # Set labels for sex
+  scale_fill_manual(values = c("1" = "blue", "2" = "red"), 
+                    labels = c("1" = "Male", "2" = "Female")) +
+  labs(
+       x = "Estimated stressful life events score",
+       y = "Conditioned pain modulation (N)",
+              colour = "Sex",  # Change the legend title to "Sex"
+       fill = "Sex") +  # Ensure fill legend title is also "Sex"
+theme_bw() +
+theme(aspect.ratio = 1,
+                legend.position = "none")    +
+   theme(axis.title.x = element_text(size = 14),
+        axis.title.y = element_text(size = 14))
+
+
+p1 +p2
+ # unadjusted model of main effect of comp_score on CPM
+comp_score_cpm_lx <- lm(session_1 ~ comp_score, data = cpm_lumbar)
+
+plot(comp_score_cpm_lx)
+model_parameters(comp_score_cpm_lx) #No main effect at lumbar 
+
+comp_score_cpm_delt <- lm(session_1 ~ comp_score, data = cpm_deltoid)
+
+plot(comp_score_cpm_delt)
+model_parameters(comp_score_cpm_delt) #No main effect at the deltoid
+  
+# unadjusted model with sex as interaction term
+comp_score_cpm_lx_sex <- lm(session_1 ~ comp_score*sex, data = cpm_lumbar)
+
+plot(comp_score_cpm_lx_sex)
+model_parameters(comp_score_cpm_lx_sex)
+
+comp_score_cpm_delt_sex <- lm(session_1 ~ comp_score*sex, data = cpm_deltoid)
+
+plot(comp_score_cpm_delt_sex)
+model_parameters(comp_score_cpm_delt_sex)
+
+# Adjusted
+comp_score_cpm_lx_adj <-lm(session_1 ~ comp_score*sex + current_age + psqi_global_score + mdd_diagnosis + covid_in_prev_months + other_illness + chronic_illness_excl_mdd, data = cpm_lumbar)
+
+comp_score_cpm_lx_adj_no_int <-lm(session_1 ~ comp_score + current_age + psqi_global_score + mdd_diagnosis + covid_in_prev_months + other_illness + chronic_illness_excl_mdd, data = cpm_lumbar)
+
+plot(cpm_all_lx_adj)
+model_parameters(comp_score_cpm_lx_adj)
+
+comp_score_cpm_delt_adj <-lm(session_1 ~ comp_score*sex + current_age + psqi_global_score + mdd_diagnosis + covid_in_prev_months + other_illness + chronic_illness_excl_mdd, data = cpm_deltoid)
+
+comp_score_cpm_delt_adj_no_int <-lm(session_1 ~ comp_score + current_age + psqi_global_score + mdd_diagnosis + covid_in_prev_months + other_illness + chronic_illness_excl_mdd, data = cpm_deltoid)
+
+
+plot(comp_score_cpm_delt_adj)
+model_parameters(comp_score_cpm_delt_adj)
+
+tab_cpm_comp_lx <- sjPlot::tab_model(comp_score_cpm_lx, comp_score_cpm_lx_sex, comp_score_cpm_lx_adj,
+                                       dv.labels = c("Unadjusted model of main effect","Unadjusted model with sex interaction term", "Adjusted model with sex interaction term"),
+                                       pred.labels = c("Intercept", "Stressful life events score", "Sex (female)", "Stressful life events score x sex (female)", "Age", "PSQI score", "Diagnosis of major depressive disorder", "Recent COVID-19", "Recent acute illness", "Diagnosis of chronic illness"))
+                              
+print(tab_cpm_comp_lx)
+                              
+tab_cpm_comp_delt <- sjPlot::tab_model(comp_score_cpm_delt, comp_score_cpm_delt_sex, comp_score_cpm_delt_adj,
+                                       dv.labels = c("Unadjusted model of main effect","Unadjusted model with sex interaction term", "Adjusted model with sex interaction term"),
+                                       pred.labels = c("Intercept", "Stressful life events score", "Sex (female)", "Stressful life events score x sex (female)", "Age", "PSQI score", "Diagnosis of major depressive disorder", "Recent COVID-19", "Recent acute illness", "Diagnosis of chronic illness"))
+                              print(tab_cpm_comp_delt)
+
+plot_no_int_cpm <- ggpredict(comp_score_cpm_delt_adj_no_int, terms = "comp_score")
+
+cpm_no_interaction <- ggplot(plot_no_int_cpm, aes(x = x,
+                 y = predicted)) +
+  # Add geom_point for observed data
+  geom_point(data = cpm_deltoid, aes(x = comp_score, y = session_1), color = "black", alpha = 0.6) +  # Observed points
+  geom_line(size = 1.2) +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high), fill = "purple", alpha = 0.2, show.legend = FALSE) +
+  labs(title = "a)",
+       x = "Estimated stressful life events score",
+       y = "Conditioned pain modulation (N)") +
+  theme_bw() +
+  theme(axis.title.x = element_text(size = 14),
+        axis.title.y = element_text(size = 14))
+
+#Plot predicted values with the interaction term sex
+pred <- ggpredict(comp_score_cpm_delt_adj, terms = c("comp_score", "sex"))
+
+cpm2 <- ggplot(pred, aes(x = x,
+                 y = predicted,
+                 color = as.factor(group))) +
+  geom_line(size = 1.2) +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high, fill = as.factor(group)), alpha = 0.2, colour = NA) +
+ scale_color_manual(values = c("2" = "red", "1" = "blue"),  # Map colors to the numbers
+                     labels = c("1" = "Males", "2" = "Females")) +  # Correctly map numbers to text labels
+  scale_fill_manual(values = c("2" = "red", "1" = "blue"),
+                    labels = c("1" = "Males", "2" = "Females")) +  # Same here for fill
+       geom_point(data = cpm_deltoid, aes(x = comp_score, y = session_1, color = as.factor(sex)), alpha = 0.6) +  # Observed points
+   labs(title = "b)",
+    x = "Estimated stressful life events score",
+       y = NULL,
+       colour = "Sex",
+       fill = "Sex") +
+  theme_bw() +
+theme(aspect.ratio = 1) +
+   theme(axis.title.x = element_text(size = 12))
+
+         cpm_plots <- cpm_no_interaction / cpm2 +
+           plot_annotation(caption = "Estimated stressful life events score") &
+           theme(axis.title.x = element_blank(),
+                 plot.caption = element_text(hjust = 0.5, size = 14, margin = margin(t=5)))
+
+```
+
+
+## TS
+```{r ts_comp}
+
+ts_lumbar <- merge(ts_lumbar, foo, by = "study_id")
+ts_deltoid <- merge(ts_deltoid, foo, by = "study_id")
+ts <- merge(ts, foo, by = "study_id")
+
+p1 <- ggplot(data = ts,
+       aes(x = comp_score,
+           y = session_1)) +
+geom_point(position = position_jitter(width = 0.3), alpha = 0.5) +
+  geom_smooth(method = "lm",  fill= "purple", color = "black") +
+  facet_wrap(~site, labeller = as_labeller(c("lumbar" = "Lumbar test site", "deltoid" = "Deltoid test site"))) +
+  labs(
+       x = "Estimated stressful life events score",
+       y = "Temporal summation (SPARS)") +
+  theme_bw() +
+theme(aspect.ratio = 1) +
+   theme(axis.title.x = element_text(size = 14),
+        axis.title.y = element_text(size = 14))
+
+p2 <- ggplot(data = ts,
+       aes(x = comp_score,
+           y = session_1,
+           colour = factor(sex))) +
+facet_wrap(~site, labeller = as_labeller(c("lumbar" = "Lumbar test site", "deltoid" = "Deltoid test site"))) +
+  geom_point(position = position_jitter(width = 0.3), alpha = 0.5) +
+  geom_smooth(method = "lm", aes(fill = factor(sex)),
+              alpha = 0.3, se = TRUE) +  
+  scale_colour_manual(values = c("1" = "blue", "2" = "red"), 
+                      labels = c("1" = "Male", "2" = "Female")) +  # Set labels for sex
+  scale_fill_manual(values = c("1" = "blue", "2" = "red"), 
+                    labels = c("1" = "Male", "2" = "Female")) +
+  labs(
+       x = "Estimated stressful life events score",
+       y = "Temporal summation (SPARS)",
+              colour = "Sex",  # Change the legend title to "Sex"
+       fill = "Sex") +  # Ensure fill legend title is also "Sex"
+theme_bw() +
+theme(aspect.ratio = 1,
+          legend.position = "none")   +
+   theme(axis.title.x = element_text(size = 14),
+        axis.title.y = element_text(size = 14))
+
+p1 + p2
+
+# unadjusted model of main effect of comp_score on TS
+comp_score_ts_lx <- lm(session_1 ~ comp_score, data = ts_lumbar)
+
+par(mfrow = c(2, 2))  # 2 rows and 2 columns
+plot(comp_score_ts_lx)
+par(mfrow = c(1, 1))  # reset to default
+
+
+plot(comp_score_ts_lx)
+model_parameters(comp_score_ts_lx) #No main effect at lumbar 
+
+comp_score_ts_delt<- lm(session_1 ~ comp_score, data = ts_deltoid)
+
+plot(comp_score_ts_delt)
+model_parameters(comp_score_ts_delt) #No main effect at deltoid
+
+# unadjusted model with sex as interaction term
+comp_score_ts_lx_sex <- lm(session_1 ~ comp_score*sex, data = ts_lumbar)
+
+plot(comp_score_ts_lx_sex)
+model_parameters(comp_score_ts_lx_sex) #No interaction 
+
+comp_score_ts_delt_sex <- lm(session_1 ~ comp_score*sex, data = ts_deltoid)
+
+plot(comp_score_ts_delt_sex)
+model_parameters(comp_score_ts_delt_sex) #No interaction 
+
+
+# Adjusted
+comp_score_ts_lx_adj <-lm(session_1 ~ comp_score*sex + current_age + psqi_global_score + mdd_diagnosis + covid_in_prev_months + other_illness + chronic_illness_excl_mdd, data = ts_lumbar)
+
+comp_score_ts_lx_adj_no_int <-lm(session_1 ~ comp_score + current_age + psqi_global_score + mdd_diagnosis + covid_in_prev_months + other_illness + chronic_illness_excl_mdd, data = ts_lumbar)
+
+plot(comp_score_ts_lx_adj)
+model_parameters(comp_score_ts_lx_adj) #no relationship
+
+comp_score_ts_delt_adj <-lm(session_1 ~ comp_score*sex + current_age + psqi_global_score + mdd_diagnosis + covid_in_prev_months + other_illness + chronic_illness_excl_mdd, data = ts_deltoid)
+
+comp_score_ts_delt_adj_no_int <-lm(session_1 ~ comp_score + current_age + psqi_global_score + mdd_diagnosis + covid_in_prev_months + other_illness + chronic_illness_excl_mdd, data = ts_deltoid)
+
+
+plot(comp_score_ts_delt_adj)
+model_parameters(comp_score_ts_delt_adj) #no relationship
+
+tab_ts_lx <- sjPlot::tab_model(comp_score_ts_lx, comp_score_ts_lx_sex, comp_score_ts_lx_adj,
+                                       dv.labels = c("Unadjusted model of main effect","Unadjusted model with sex interaction term", "Adjusted model with sex interaction term"),
+                                       pred.labels = c("Intercept", "Stressful life events score", "Sex (female)", "Stressful life events score x sex (female)", "Age", "PSQI score", "Diagnosis of major depressive disorder", "Recent COVID-19", "Recent acute illness", "Diagnosis of chronic illness"))
+                              
+print(tab_ts_lx)
+                              
+tab_ts_delt <- sjPlot::tab_model(comp_score_ts_delt, comp_score_ts_delt_sex, comp_score_ts_delt_adj,
+                                       dv.labels = c("Unadjusted model of main effect","Unadjusted model with sex interaction term", "Adjusted model with sex interaction term"),
+                                       pred.labels = c("Intercept", "Stressful life events score", "Sex (female)", "Stressful life events score x sex (female)", "Age", "PSQI score", "Diagnosis of major depressive disorder", "Recent COVID-19", "Recent acute illness", "Diagnosis of chronic illness"))
+                              print(tab_ts_delt)
+                              
+                              
+plot_no_int <- ggpredict(comp_score_ts_delt_adj_no_int, terms = "comp_score")
+
+ts_no_interaction <- ggplot(plot_no_int, aes(x = x,
+                 y = predicted)) +
+  # Add geom_point for observed data
+  geom_point(data = ts_deltoid, aes(x = comp_score, y = session_1), color = "black", alpha = 0.6) +  # Observed points
+  geom_line(linewidth = 1.2) +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high), fill = "purple", alpha = 0.2, show.legend = FALSE) +
+  labs(title = "a)",
+       x = "Estimated stressful life events score",
+       y = "Temporal summation (SPARS)") +
+  theme_bw() +
+  theme(axis.title.x = element_text(size = 14),
+        axis.title.y = element_text(size = 14))
+
+#Plot predicted values with the interaction term sex
+pred <- ggpredict(comp_score_ts_delt_adj, terms = c("comp_score", "sex"))
+
+ts2 <- ggplot(pred, aes(x = x,
+                 y = predicted,
+                 color = as.factor(group))) +
+  geom_line(size = 1.2) +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high, fill = as.factor(group)), alpha = 0.2, colour = NA) +
+ scale_color_manual(values = c("2" = "red", "1" = "blue"),  # Map colors to the numbers
+                     labels = c("1" = "Males", "2" = "Females")) +  # Correctly map numbers to text labels
+  scale_fill_manual(values = c("2" = "red", "1" = "blue"),
+                    labels = c("1" = "Males", "2" = "Females")) +  # Same here for fill
+       geom_point(data = ts_deltoid, aes(x = comp_score, y = session_1, color = as.factor(sex)), alpha = 0.6) +  # Observed points
+   labs(title = "b)",
+    x = "PSS",
+       y = NULL,
+       colour = "Sex",
+       fill = "Sex") +
+  theme_bw() +
+theme(aspect.ratio = 1) +
+   theme(axis.title.x = element_text(size = 12))
+
+         ts_plots <- ts_no_interaction / ts2 +
+           plot_annotation(caption = "Estimated stressful life events score") &
+           theme(axis.title.x = element_blank(),
+                 plot.caption = element_text(hjust = 0.5, size = 14, margin = margin(t=5)))
+
+```
